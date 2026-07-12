@@ -1,3 +1,4 @@
+import json
 from functools import lru_cache
 from typing import Annotated
 from typing import Literal
@@ -34,10 +35,22 @@ class Settings(BaseSettings):
 
     @field_validator("database_url", mode="before")
     @classmethod
-    def normalize_database_url(cls, value: str) -> str:
+    def normalize_database_url(cls, value: str | None) -> str:
+        if value is None or str(value).strip() == "":
+            msg = "DATABASE_URL is required. Set it in Render environment variables."
+            raise ValueError(msg)
+        value = str(value).strip()
         if value.startswith("postgresql://"):
             return value.replace("postgresql://", "postgresql+asyncpg://", 1)
         return value
+
+    @field_validator("public_base_url", "telegram_bot_token", "openai_api_key", "api_secret_key", mode="before")
+    @classmethod
+    def empty_string_to_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = str(value).strip()
+        return value or None
 
     @field_validator("allowed_telegram_user_ids", mode="before")
     @classmethod
@@ -45,7 +58,14 @@ class Settings(BaseSettings):
         if value is None or value == "":
             return []
         if isinstance(value, list):
-            return value
+            return [int(item) for item in value]
+        value = value.strip()
+        if value.startswith("["):
+            parsed = json.loads(value)
+            if not isinstance(parsed, list):
+                msg = "ALLOWED_TELEGRAM_USER_IDS must be a comma-separated list or JSON array."
+                raise ValueError(msg)
+            return [int(item) for item in parsed]
         return [int(part.strip()) for part in value.split(",") if part.strip()]
 
 

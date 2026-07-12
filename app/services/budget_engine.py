@@ -124,7 +124,7 @@ class BudgetEngine:
             groceries_week=groceries_week,
             category_summaries=summaries,
             upcoming_payments=[
-                UpcomingPayment(name=p.name, amount=money(p.amount), payment_date=p.next_payment_date)
+                UpcomingPayment(name=p.name, amount=money(p.amount), payment_date=p.payment_date)
                 for p in upcoming
             ],
         )

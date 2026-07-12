@@ -123,6 +123,7 @@ def test_mandatory_payments_in_salary_period_are_reserved_after_due_day() -> Non
     assert snapshot.period_start == date(2026, 7, 10)
     assert snapshot.mandatory_remaining == Decimal("2150.00")
     assert snapshot.available_to_spend <= Decimal("1850.00")
+    assert snapshot.upcoming_payments[0].payment_date == date(2026, 7, 10)
 
 
 def test_purchase_approve() -> None:

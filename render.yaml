@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: family-finance-bot
+    env: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: APP_HOST
+        value: 0.0.0.0
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ALLOWED_TELEGRAM_USER_IDS
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        sync: false
+      - key: API_SECRET_KEY
+        sync: false
+      - key: DEFAULT_CURRENCY
+        value: EUR
+      - key: DEFAULT_TIMEZONE
+        value: Europe/Madrid
+      - key: MAX_RECEIPT_SIZE_MB
+        value: "10"
+      - key: LOG_LEVEL
+        value: INFO

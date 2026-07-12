@@ -23,6 +23,16 @@ class UpcomingPayment(BaseModel):
     payment_date: date | None = None
 
 
+class GroceriesWeekSummary(BaseModel):
+    week_start: date
+    week_end: date
+    next_week_start: date
+    weekly_limit: Decimal
+    spent: Decimal
+    remaining: Decimal
+    start_weekday: int
+
+
 class FinancialSnapshot(BaseModel):
     period_start: date
     period_end: date
@@ -40,6 +50,7 @@ class FinancialSnapshot(BaseModel):
     available_to_spend: Decimal
     days_until_next_income: int
     safe_daily_limit: Decimal
+    groceries_week: GroceriesWeekSummary | None = None
     category_summaries: list[CategorySummary]
     upcoming_payments: list[UpcomingPayment]
 

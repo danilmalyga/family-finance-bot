@@ -8,6 +8,8 @@ class BudgetUpsert(BaseModel):
     savings_target: Decimal = Decimal("0.00")
     minimum_reserve: Decimal = Decimal("0.00")
     salary_day: int | None = None
+    groceries_weekly_limit: Decimal = Decimal("0.00")
+    groceries_week_start_weekday: int = 1
     notes: str = ""
 
 

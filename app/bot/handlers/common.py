@@ -119,8 +119,17 @@ async def month_report(message: Message) -> None:
         f"Доступно к тратам: {fmt_money(snapshot.available_to_spend)}",
         f"Безопасный лимит в день: {fmt_money(snapshot.safe_daily_limit)}",
         "",
-        "Основные категории:",
     ]
+    if snapshot.groceries_week is not None:
+        groceries = snapshot.groceries_week
+        lines += [
+            "Продукты на текущую неделю:",
+            f"Период: {groceries.week_start:%d.%m} — {groceries.week_end:%d.%m}",
+            f"Потрачено: {fmt_money(groceries.spent)} / {fmt_money(groceries.weekly_limit)}",
+            f"Осталось до {weekday_name(groceries.next_week_start.isoweekday())}: {fmt_money(groceries.remaining)}",
+            "",
+        ]
+    lines.append("Основные категории:")
     for category in sorted(snapshot.category_summaries, key=lambda c: c.spent, reverse=True)[:6]:
         if category.spent > 0 or category.monthly_limit:
             limit = f" / {fmt_money(category.monthly_limit)}" if category.monthly_limit else ""
@@ -187,19 +196,27 @@ async def budget_settings_text(message: Message, state: FSMContext) -> None:
         return
     parts = message.text.replace(",", ".").split()
     if len(parts) < 4:
-        await message.answer("Формат: доход накопления резерв день_зарплаты\nНапример: 3400 300 1500 1")
+        await message.answer(
+            "Формат: доход накопления резерв день_зарплаты\n"
+            "Например: 3400 300 1500 10\n\n"
+            "Можно добавить продукты: 3400 300 1500 10 200 вторник"
+        )
         return
     try:
         planned_income = money(parts[0])
         savings_target = money(parts[1])
         minimum_reserve = money(parts[2])
         salary_day = int(parts[3])
+        groceries_weekly_limit = money(parts[4]) if len(parts) >= 5 else None
+        groceries_week_start_weekday = parse_weekday(parts[5]) if len(parts) >= 6 else None
     except (InvalidOperation, ValueError):
-        await message.answer("Не удалось прочитать числа. Пример: 3400 300 1500 1")
+        await message.answer("Не удалось прочитать данные. Пример: 3400 300 1500 10 200 вторник")
         return
     today = date.today()
     async with SessionLocal() as session:
-        await BudgetRepository(session).upsert_month_budget(
+        repo = BudgetRepository(session)
+        existing_budget = await repo.get_month_budget(user.family_id, today.year, today.month)
+        await repo.upsert_month_budget(
             user.family_id,
             today.year,
             today.month,
@@ -208,6 +225,12 @@ async def budget_settings_text(message: Message, state: FSMContext) -> None:
             minimum_reserve,
             salary_day,
             "Настроено через Telegram",
+            groceries_weekly_limit
+            if groceries_weekly_limit is not None
+            else money(existing_budget.groceries_weekly_limit if existing_budget else 0),
+            groceries_week_start_weekday
+            if groceries_week_start_weekday is not None
+            else (existing_budget.groceries_week_start_weekday if existing_budget else 1),
         )
         await session.commit()
     await state.clear()
@@ -216,7 +239,9 @@ async def budget_settings_text(message: Message, state: FSMContext) -> None:
         f"Плановый доход: {fmt_money(planned_income)}\n"
         f"Накопления: {fmt_money(savings_target)}\n"
         f"Минимальный резерв: {fmt_money(minimum_reserve)}\n"
-        f"День зарплаты: {salary_day}"
+        f"День зарплаты: {salary_day}\n"
+        f"Продукты в неделю: {fmt_money(groceries_weekly_limit) if groceries_weekly_limit is not None else 'без изменений'}\n"
+        f"Старт продуктовой недели: {weekday_name(groceries_week_start_weekday) if groceries_week_start_weekday is not None else 'без изменений'}"
     )
 
 
@@ -247,6 +272,41 @@ async def payment_settings_text(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         f"Обязательный платёж сохранён:\n{payment.name} — {fmt_money(payment.amount)}, день {payment_day}"
+    )
+
+
+@router.message(SettingsFlow.waiting_groceries_budget)
+async def groceries_budget_settings_text(message: Message, state: FSMContext) -> None:
+    user = await get_user(message)
+    if user is None or not message.text:
+        return
+    parsed = parse_groceries_budget_settings(message.text)
+    if parsed is None:
+        await message.answer(groceries_budget_help())
+        return
+    weekly_limit, start_weekday = parsed
+    today = date.today()
+    async with SessionLocal() as session:
+        repo = BudgetRepository(session)
+        existing_budget = await repo.get_month_budget(user.family_id, today.year, today.month)
+        await repo.upsert_month_budget(
+            user.family_id,
+            today.year,
+            today.month,
+            money(existing_budget.planned_income if existing_budget else 0),
+            money(existing_budget.savings_target if existing_budget else 0),
+            money(existing_budget.minimum_reserve if existing_budget else 0),
+            existing_budget.salary_day if existing_budget else None,
+            "Настроено через Telegram",
+            weekly_limit,
+            start_weekday,
+        )
+        await session.commit()
+    await state.clear()
+    await message.answer(
+        "Лимит продуктов сохранён.\n"
+        f"На неделю: {fmt_money(weekly_limit)}\n"
+        f"Неделя начинается: {weekday_name(start_weekday)}"
     )
 
 
@@ -512,8 +572,19 @@ async def menu_action(message: Message) -> None:
 async def settings_budget_callback(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(SettingsFlow.waiting_budget)
     await callback.message.answer(  # type: ignore[union-attr]
-        "Введите бюджет:\nдоход накопления резерв день_зарплаты\nНапример: 3400 300 1500 1"
+        "Введите бюджет:\n"
+        "доход накопления резерв день_зарплаты\n"
+        "Например: 3400 300 1500 10\n\n"
+        "Можно сразу добавить недельный лимит продуктов:\n"
+        "3400 300 1500 10 200 вторник"
     )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "settings:groceries")
+async def settings_groceries_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(SettingsFlow.waiting_groceries_budget)
+    await callback.message.answer(groceries_budget_help())  # type: ignore[union-attr]
     await callback.answer()
 
 
@@ -596,6 +667,71 @@ def parse_payment_settings(text: str) -> tuple[str, Decimal, int, str] | None:
     if not name:
         return None
     return name, amount, payment_day, category_code
+
+
+def parse_groceries_budget_settings(text: str) -> tuple[Decimal, int] | None:
+    parts = text.replace(",", ".").split()
+    if len(parts) < 2:
+        return None
+    try:
+        weekly_limit = money(parts[0])
+        start_weekday = parse_weekday(parts[1])
+    except (InvalidOperation, ValueError):
+        return None
+    return weekly_limit, start_weekday
+
+
+def parse_weekday(value: str) -> int:
+    normalized = value.strip().lower().replace(".", "")
+    if normalized.isdigit():
+        day = int(normalized)
+        if 1 <= day <= 7:
+            return day
+        raise ValueError("weekday must be from 1 to 7")
+    aliases = {
+        "понедельник": 1,
+        "пн": 1,
+        "вторник": 2,
+        "вт": 2,
+        "среда": 3,
+        "ср": 3,
+        "четверг": 4,
+        "чт": 4,
+        "пятница": 5,
+        "пт": 5,
+        "суббота": 6,
+        "сб": 6,
+        "воскресенье": 7,
+        "вс": 7,
+    }
+    if normalized not in aliases:
+        raise ValueError("unknown weekday")
+    return aliases[normalized]
+
+
+def weekday_name(value: int | None) -> str:
+    names = {
+        1: "понедельник",
+        2: "вторник",
+        3: "среда",
+        4: "четверг",
+        5: "пятница",
+        6: "суббота",
+        7: "воскресенье",
+    }
+    return names.get(value or 1, "понедельник")
+
+
+def groceries_budget_help() -> str:
+    return (
+        "Введите недельный лимит продуктов и день отсчёта:\n"
+        "сумма день_недели\n\n"
+        "Примеры:\n"
+        "200 вторник\n"
+        "200 вт\n"
+        "200 2\n\n"
+        "Дни: 1 — понедельник, 2 — вторник, ..., 7 — воскресенье."
+    )
 
 
 def payment_settings_help() -> str:

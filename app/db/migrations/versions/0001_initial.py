@@ -114,6 +114,8 @@ def upgrade() -> None:
         sa.Column("savings_target", sa.Numeric(14, 2), nullable=False),
         sa.Column("minimum_reserve", sa.Numeric(14, 2), nullable=False),
         sa.Column("salary_day", sa.Integer()),
+        sa.Column("groceries_weekly_limit", sa.Numeric(14, 2), nullable=False),
+        sa.Column("groceries_week_start_weekday", sa.Integer(), nullable=False),
         sa.Column("notes", sa.Text(), nullable=False),
         *timestamps(),
         sa.UniqueConstraint("family_id", "year", "month", name="uq_budget_family_month"),

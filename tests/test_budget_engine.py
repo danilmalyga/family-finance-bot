@@ -15,7 +15,13 @@ def category(code: str, limit: str | None = None) -> Category:
     return Category(id=uuid.uuid4(), family_id=uuid.uuid4(), code=code, name=code, monthly_limit=Decimal(limit) if limit else None)
 
 
-def tx(tx_type: TransactionType, amount: str, status: str = "confirmed", category_id: uuid.UUID | None = None) -> Transaction:
+def tx(
+    tx_type: TransactionType,
+    amount: str,
+    status: str = "confirmed",
+    category_id: uuid.UUID | None = None,
+    transaction_date: date = date(2026, 7, 12),
+) -> Transaction:
     return Transaction(
         id=uuid.uuid4(),
         family_id=uuid.uuid4(),
@@ -23,7 +29,7 @@ def tx(tx_type: TransactionType, amount: str, status: str = "confirmed", categor
         type=tx_type,
         amount=Decimal(amount),
         status=status,
-        transaction_date=date(2026, 7, 12),
+        transaction_date=transaction_date,
         source="manual",
         currency="EUR",
         description="test",
@@ -40,8 +46,18 @@ def budget() -> MonthlyBudget:
         savings_target=Decimal("300.00"),
         minimum_reserve=Decimal("1500.00"),
         salary_day=31,
+        groceries_weekly_limit=Decimal("0.00"),
+        groceries_week_start_weekday=1,
         notes="",
     )
+
+
+def budget_with_groceries() -> MonthlyBudget:
+    item = budget()
+    item.salary_day = 10
+    item.groceries_weekly_limit = Decimal("200.00")
+    item.groceries_week_start_weekday = 2
+    return item
 
 
 def payment(amount: str, payment_day: int = 20) -> RecurringPayment:
@@ -160,3 +176,29 @@ def test_family_data_separation_by_input_scope() -> None:
     snapshot = BudgetEngine().build_snapshot(date(2026, 7, 12), [first_family_tx], None, [], [])
     assert second_family_tx.amount == Decimal("9000")
     assert snapshot.total_income == Decimal("1000.00")
+
+
+def test_groceries_weekly_limit_from_tuesday() -> None:
+    groceries = category("groceries")
+    snapshot = BudgetEngine().build_snapshot(
+        date(2026, 7, 15),
+        [
+            tx(TransactionType.INCOME, "3400", transaction_date=date(2026, 7, 10)),
+            tx(
+                TransactionType.EXPENSE,
+                "101",
+                category_id=groceries.id,
+                transaction_date=date(2026, 7, 15),
+            ),
+        ],
+        budget_with_groceries(),
+        [],
+        [groceries],
+    )
+
+    assert snapshot.period_start == date(2026, 7, 10)
+    assert snapshot.groceries_week is not None
+    assert snapshot.groceries_week.week_start == date(2026, 7, 14)
+    assert snapshot.groceries_week.next_week_start == date(2026, 7, 21)
+    assert snapshot.groceries_week.spent == Decimal("101.00")
+    assert snapshot.groceries_week.remaining == Decimal("99.00")

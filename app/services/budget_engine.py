@@ -16,6 +16,7 @@ from app.repositories.transactions import TransactionRepository
 from app.schemas.finance import (
     CategorySummary,
     FinancialSnapshot,
+    GroceriesWeekSummary,
     PurchaseAdvice,
     PurchaseRequest,
     UpcomingPayment,
@@ -49,8 +50,15 @@ class BudgetEngine:
         budget_repo = BudgetRepository(self.session)
         family_repo = FamilyRepository(self.session)
         budget = await budget_repo.get_month_budget(family_id, today.year, today.month)
+        if budget is None:
+            budget = await budget_repo.get_latest_budget(family_id)
         period_start, period_end = budget_cycle_range(today, budget)
-        transactions = await tx_repo.confirmed_between(family_id, period_start, period_end)
+        groceries_week_start, _groceries_week_end = groceries_week_range(today, budget)
+        transactions = await tx_repo.confirmed_between(
+            family_id,
+            min(period_start, groceries_week_start),
+            period_end,
+        )
         recurring = await budget_repo.list_active_recurring(family_id)
         categories = await family_repo.list_categories(family_id)
         return self.build_snapshot(today, transactions, budget, recurring, categories)
@@ -65,10 +73,13 @@ class BudgetEngine:
     ) -> FinancialSnapshot:
         period_start, period_end = budget_cycle_range(today, budget)
         confirmed = [tx for tx in transactions if tx.status == TransactionStatus.CONFIRMED]
-        total_income = sum_type(confirmed, TransactionType.INCOME)
-        total_expenses = sum_type(confirmed, TransactionType.EXPENSE)
-        total_savings = sum_type(confirmed, TransactionType.SAVING)
-        total_debt = sum_type(confirmed, TransactionType.DEBT_PAYMENT)
+        period_confirmed = [
+            tx for tx in confirmed if period_start <= tx.transaction_date <= period_end
+        ]
+        total_income = sum_type(period_confirmed, TransactionType.INCOME)
+        total_expenses = sum_type(period_confirmed, TransactionType.EXPENSE)
+        total_savings = sum_type(period_confirmed, TransactionType.SAVING)
+        total_debt = sum_type(period_confirmed, TransactionType.DEBT_PAYMENT)
         balance = money(total_income - total_expenses - total_savings - total_debt)
 
         minimum_reserve = money(budget.minimum_reserve if budget else ZERO)
@@ -84,7 +95,8 @@ class BudgetEngine:
         days_until_income = max(1, (next_income - today).days)
         safe_daily = money(max(ZERO, available) / Decimal(days_until_income))
 
-        summaries = category_summaries(confirmed, categories)
+        summaries = category_summaries(period_confirmed, categories)
+        groceries_week = groceries_week_summary(today, confirmed, budget, categories)
         return FinancialSnapshot(
             period_start=period_start,
             period_end=period_end,
@@ -102,6 +114,7 @@ class BudgetEngine:
             available_to_spend=available,
             days_until_next_income=days_until_income,
             safe_daily_limit=safe_daily,
+            groceries_week=groceries_week,
             category_summaries=summaries,
             upcoming_payments=[
                 UpcomingPayment(name=p.name, amount=money(p.amount), payment_date=p.next_payment_date)
@@ -184,6 +197,21 @@ def budget_cycle_range(day: date, budget: MonthlyBudget | None) -> tuple[date, d
     return current_start, next_start - timedelta(days=1)
 
 
+def groceries_week_range(day: date, budget: MonthlyBudget | None) -> tuple[date, date]:
+    start_weekday = normalize_weekday(
+        budget.groceries_week_start_weekday if budget else 1
+    )
+    days_since_start = (day.isoweekday() - start_weekday) % 7
+    start = day - timedelta(days=days_since_start)
+    return start, start + timedelta(days=6)
+
+
+def normalize_weekday(value: int | None) -> int:
+    if value is None:
+        return 1
+    return min(7, max(1, value))
+
+
 def salary_cycle_anchor(year: int, month: int, salary_day: int) -> date:
     max_day = calendar.monthrange(year, month)[1]
     return date(year, month, min(salary_day, max_day))
@@ -263,3 +291,63 @@ def category_summaries(transactions: list[Transaction], categories: list[Categor
             )
         )
     return summaries
+
+
+def groceries_week_summary(
+    today: date,
+    transactions: list[Transaction],
+    budget: MonthlyBudget | None,
+    categories: list[Category],
+) -> GroceriesWeekSummary | None:
+    if budget is None or budget.groceries_weekly_limit <= ZERO:
+        return None
+    week_start, week_end = groceries_week_range(today, budget)
+    groceries_codes = groceries_category_codes(categories)
+    spent = sum_expenses_for_category_codes(transactions, groceries_codes, week_start, week_end, categories)
+    weekly_limit = money(budget.groceries_weekly_limit)
+    return GroceriesWeekSummary(
+        week_start=week_start,
+        week_end=week_end,
+        next_week_start=week_end + timedelta(days=1),
+        weekly_limit=weekly_limit,
+        spent=spent,
+        remaining=max(ZERO, money(weekly_limit - spent)),
+        start_weekday=normalize_weekday(budget.groceries_week_start_weekday),
+    )
+
+
+def groceries_category_codes(categories: list[Category]) -> set[str]:
+    groceries = next((category for category in categories if category.code == "groceries"), None)
+    codes = {"groceries"}
+    if groceries is None:
+        return codes
+    codes.update(category.code for category in categories if category.parent_id == groceries.id)
+    return codes
+
+
+def sum_expenses_for_category_codes(
+    transactions: list[Transaction],
+    category_codes: set[str],
+    period_start: date,
+    period_end: date,
+    categories: list[Category],
+) -> Decimal:
+    category_by_id = {category.id: category for category in categories}
+    total = ZERO
+    for tx in transactions:
+        if (
+            tx.type != TransactionType.EXPENSE
+            or not period_start <= tx.transaction_date <= period_end
+        ):
+            continue
+        categorized_items = [item for item in tx.items if item.category_id is not None]
+        if categorized_items:
+            for item in categorized_items:
+                category = category_by_id.get(item.category_id)
+                if category and category.code in category_codes:
+                    total = money(total + item.total_amount)
+            continue
+        category = category_by_id.get(tx.category_id) if tx.category_id else None
+        if category and category.code in category_codes:
+            total = money(total + tx.amount)
+    return total

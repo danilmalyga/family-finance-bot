@@ -34,6 +34,8 @@ async def main() -> None:
             Decimal("1500.00"),
             1,
             "Seed budget",
+            Decimal("200.00"),
+            2,
         )
         debt = await family_repo.get_category_by_code(family.id, "debt")
         housing = await family_repo.get_category_by_code(family.id, "housing")

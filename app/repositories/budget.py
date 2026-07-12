@@ -25,6 +25,17 @@ class BudgetRepository:
             ),
         )
 
+    async def get_latest_budget(self, family_id: uuid.UUID) -> MonthlyBudget | None:
+        return cast(
+            MonthlyBudget | None,
+            await self.session.scalar(
+                select(MonthlyBudget)
+                .where(MonthlyBudget.family_id == family_id)
+                .order_by(MonthlyBudget.year.desc(), MonthlyBudget.month.desc())
+                .limit(1)
+            ),
+        )
+
     async def upsert_month_budget(
         self,
         family_id: uuid.UUID,
@@ -35,6 +46,8 @@ class BudgetRepository:
         minimum_reserve: Decimal,
         salary_day: int | None,
         notes: str,
+        groceries_weekly_limit: Decimal = Decimal("0.00"),
+        groceries_week_start_weekday: int = 1,
     ) -> MonthlyBudget:
         budget = await self.get_month_budget(family_id, year, month)
         if budget is None:
@@ -44,6 +57,8 @@ class BudgetRepository:
         budget.savings_target = savings_target
         budget.minimum_reserve = minimum_reserve
         budget.salary_day = salary_day
+        budget.groceries_weekly_limit = groceries_weekly_limit
+        budget.groceries_week_start_weekday = groceries_week_start_weekday
         budget.notes = notes
         await self.session.flush()
         return budget

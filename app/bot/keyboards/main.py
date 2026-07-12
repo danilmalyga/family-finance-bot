@@ -64,6 +64,7 @@ def settings_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Бюджет месяца", callback_data="settings:budget")],
+            [InlineKeyboardButton(text="Продукты на неделю", callback_data="settings:groceries")],
             [InlineKeyboardButton(text="Обязательный платёж", callback_data="settings:payment")],
         ]
     )

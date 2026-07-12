@@ -44,6 +44,15 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
     mandatory_pct = percent(snapshot.mandatory_remaining, snapshot.balance)  # type: ignore[attr-defined]
     available_pct = percent(max(Decimal("0"), snapshot.available_to_spend), snapshot.balance)  # type: ignore[attr-defined]
     reserve_pct = percent(snapshot.current_reserve, snapshot.minimum_reserve)  # type: ignore[attr-defined]
+    groceries_donut = render_groceries_donut(snapshot.groceries_week)  # type: ignore[attr-defined]
+    period_spent = snapshot.total_expenses + snapshot.total_debt_payments + snapshot.total_savings  # type: ignore[attr-defined]
+    period_donut = render_donut(
+        "Период от зарплаты",
+        period_spent,
+        max(Decimal("0"), snapshot.balance),  # type: ignore[attr-defined]
+        "использовано",
+        "остаток",
+    )
 
     return f"""<!doctype html>
 <html lang="ru">
@@ -133,8 +142,46 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
       grid-template-columns: 1fr 1fr;
       gap: 18px;
     }}
+    .donuts {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }}
+    .donut-card {{
+      display: grid;
+      grid-template-columns: 150px minmax(0, 1fr);
+      gap: 18px;
+      align-items: center;
+    }}
+    .donut {{
+      width: 150px;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: conic-gradient(var(--accent) var(--pct), #e6eaf0 0);
+      display: grid;
+      place-items: center;
+    }}
+    .donut::after {{
+      content: "";
+      width: 92px;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: var(--panel);
+    }}
+    .legend {{ display: grid; gap: 8px; }}
+    .legend-row {{
+      display: grid;
+      grid-template-columns: 12px minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+    }}
+    .swatch {{ width: 12px; height: 12px; border-radius: 3px; background: var(--accent); }}
+    .swatch.rest {{ background: #e6eaf0; border: 1px solid var(--line); }}
     @media (max-width: 900px) {{
-      .kpis, .grid, .two {{ grid-template-columns: 1fr; }}
+      .kpis, .grid, .two, .donuts {{ grid-template-columns: 1fr; }}
+      .donut-card {{ grid-template-columns: 120px minmax(0, 1fr); }}
+      .donut {{ width: 120px; }}
+      .donut::after {{ width: 74px; }}
       main {{ padding: 14px; }}
       header {{ padding: 18px 16px 10px; }}
     }}
@@ -151,6 +198,11 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
       {kpi("Доступно к тратам", snapshot.available_to_spend, "good" if snapshot.available_to_spend >= 0 else "bad")}
       {kpi("Расходы периода", snapshot.total_expenses, "warn")}
       {kpi("Лимит в день", snapshot.safe_daily_limit, "blue")}
+    </section>
+
+    <section class="donuts">
+      {groceries_donut}
+      {period_donut}
     </section>
 
     <section class="grid">
@@ -205,6 +257,58 @@ def metric(label: str, value: Decimal, pct: int, tone: str, suffix: str = "") ->
       <div class="metric">
         <div class="row"><div class="name">{escape(label)}</div><div class="amount">{right}</div></div>
         <div class="bar"><div class="fill {tone}" style="width:{pct}%"></div></div>
+      </div>
+    """
+
+
+def render_groceries_donut(groceries_week: object | None) -> str:
+    if groceries_week is None:
+        return """
+          <div class="card">
+            <h2>Продукты на неделю</h2>
+            <div class="muted">Недельный лимит продуктов не настроен.</div>
+          </div>
+        """
+    title = (
+        "Продукты на неделю "
+        f"{format_date(groceries_week.week_start)} — {format_date(groceries_week.week_end)}"  # type: ignore[attr-defined]
+    )
+    return render_donut(
+        title,
+        groceries_week.spent,  # type: ignore[attr-defined]
+        groceries_week.remaining,  # type: ignore[attr-defined]
+        "потрачено",
+        "осталось",
+    )
+
+
+def render_donut(
+    title: str,
+    used: Decimal,
+    remaining: Decimal,
+    used_label: str,
+    remaining_label: str,
+) -> str:
+    total = money(used + remaining)
+    pct = percent(used, total)
+    return f"""
+      <div class="card donut-card">
+        <div class="donut" style="--pct:{pct}%"></div>
+        <div>
+          <h2>{escape(title)}</h2>
+          <div class="legend">
+            <div class="legend-row">
+              <span class="swatch"></span>
+              <span>{escape(used_label)}</span>
+              <strong>{format_money(used)}</strong>
+            </div>
+            <div class="legend-row">
+              <span class="swatch rest"></span>
+              <span>{escape(remaining_label)}</span>
+              <strong>{format_money(remaining)}</strong>
+            </div>
+          </div>
+        </div>
       </div>
     """
 

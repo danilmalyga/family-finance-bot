@@ -21,6 +21,10 @@ class MonthlyBudget(UUIDMixin, TimestampMixin, Base):
     savings_target: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     minimum_reserve: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     salary_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    groceries_weekly_limit: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), default=Decimal("0"), nullable=False
+    )
+    groceries_week_start_weekday: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     notes: Mapped[str] = mapped_column(Text, default="")
 
 

@@ -38,6 +38,8 @@ async def put_current_budget(
         payload.minimum_reserve,
         payload.salary_day,
         payload.notes,
+        payload.groceries_weekly_limit,
+        payload.groceries_week_start_weekday,
     )
     await session.commit()
     return {"id": str(budget.id)}

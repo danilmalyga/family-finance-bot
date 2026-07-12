@@ -5,7 +5,6 @@ Revises: 0001_initial
 Create Date: 2026-07-12
 """
 
-import sqlalchemy as sa
 from alembic import op
 
 revision = "0002_groceries_weekly_budget"
@@ -15,26 +14,20 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "monthly_budgets",
-        sa.Column(
-            "groceries_weekly_limit",
-            sa.Numeric(14, 2),
-            nullable=False,
-            server_default="0",
-        ),
+    op.execute(
+        """
+        ALTER TABLE monthly_budgets
+        ADD COLUMN IF NOT EXISTS groceries_weekly_limit NUMERIC(14, 2) NOT NULL DEFAULT 0
+        """
     )
-    op.add_column(
-        "monthly_budgets",
-        sa.Column(
-            "groceries_week_start_weekday",
-            sa.Integer(),
-            nullable=False,
-            server_default="1",
-        ),
+    op.execute(
+        """
+        ALTER TABLE monthly_budgets
+        ADD COLUMN IF NOT EXISTS groceries_week_start_weekday INTEGER NOT NULL DEFAULT 1
+        """
     )
-    op.alter_column("monthly_budgets", "groceries_weekly_limit", server_default=None)
-    op.alter_column("monthly_budgets", "groceries_week_start_weekday", server_default=None)
+    op.execute("ALTER TABLE monthly_budgets ALTER COLUMN groceries_weekly_limit DROP DEFAULT")
+    op.execute("ALTER TABLE monthly_budgets ALTER COLUMN groceries_week_start_weekday DROP DEFAULT")
 
 
 def downgrade() -> None:

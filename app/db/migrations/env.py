@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import get_settings
 from app.db.models import Base
-from app.db.session import should_use_ssl
+from app.db.session import get_connect_args
 
 config = context.config
 settings = get_settings()
@@ -41,7 +41,7 @@ async def run_migrations_online() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
-        connect_args={"ssl": True} if should_use_ssl(settings.database_url, settings.database_ssl) else {},
+        connect_args=get_connect_args(settings.database_url, settings.database_ssl),
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

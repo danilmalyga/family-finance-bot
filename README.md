@@ -220,14 +220,17 @@ DATABASE_URL=postgresql+asyncpg://user:password@host:5432/dbname
 - `PUBLIC_BASE_URL` используется ботом для ссылки на dashboard.
 
 1. Создайте Supabase project.
-2. Возьмите PostgreSQL connection string.
-3. Преобразуйте URL:
+2. В Supabase откройте `Project Settings` -> `Database` -> `Connection string`.
+3. Для Render используйте `Session Pooler` или `Transaction Pooler`, а не `Direct connection`.
+   Direct host вида `db.<project>.supabase.co:5432` может быть IPv6-only и на Render падать с `Network is unreachable`.
+   Pooler обычно выглядит как `aws-0-REGION.pooler.supabase.com:6543`.
+4. Преобразуйте URL:
 
 ```text
 postgresql://... -> postgresql+asyncpg://...
 ```
 
-4. Если пароль содержит спецсимволы, закодируйте их:
+5. Если пароль содержит спецсимволы, закодируйте их:
 
 ```text
 ! -> %21
@@ -240,13 +243,13 @@ postgresql://... -> postgresql+asyncpg://...
 Пример:
 
 ```env
-DATABASE_URL=postgresql+asyncpg://postgres:ENCODED_PASSWORD@HOST:5432/postgres
+DATABASE_URL=postgresql+asyncpg://postgres.PROJECT_REF:ENCODED_PASSWORD@aws-0-REGION.pooler.supabase.com:6543/postgres
 DATABASE_SSL=true
 ```
 
-5. Создайте GitHub repository и загрузите проект.
-6. В Render создайте Blueprint или Web Service из repository.
-7. Заполните Environment Variables:
+6. Создайте GitHub repository и загрузите проект.
+7. В Render создайте Blueprint или Web Service из repository.
+8. Заполните Environment Variables:
 
 ```env
 APP_ENV=production

@@ -209,7 +209,7 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
       <div class="card">
         <h2>Состояние бюджета</h2>
         {metric("Доступно после обязательных платежей, накоплений и резерва", snapshot.available_to_spend, available_pct, "good")}
-        {metric("Оставшиеся обязательные платежи", snapshot.mandatory_remaining, mandatory_pct, "warn")}
+        {metric("Обязательные платежи периода", snapshot.mandatory_remaining, mandatory_pct, "warn")}
         {metric("Резерв", snapshot.current_reserve, reserve_pct, "blue", suffix=f"из {format_money(snapshot.minimum_reserve)}")}
         <div class="row"><div class="name muted">Остаток цели накоплений</div><div class="amount">{format_money(snapshot.savings_target_remaining)}</div></div>
         <div class="row"><div class="name muted">Недобор резерва</div><div class="amount">{format_money(snapshot.reserve_gap)}</div></div>
@@ -217,7 +217,7 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
       </div>
 
       <div class="card">
-        <h2>Ближайшие обязательные платежи</h2>
+        <h2>Обязательные платежи периода</h2>
         {upcoming_rows}
       </div>
     </section>

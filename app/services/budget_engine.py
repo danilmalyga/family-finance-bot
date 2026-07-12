@@ -31,6 +31,13 @@ class PurchaseThresholds:
     caution_daily_drop_ratio: Decimal = Decimal("0.50")
 
 
+@dataclass(frozen=True)
+class PeriodMandatoryPayment:
+    name: str
+    amount: Decimal
+    payment_date: date | None
+
+
 class BudgetEngine:
     """Calculates family budget state and purchase decisions without using AI."""
 
@@ -87,7 +94,7 @@ class BudgetEngine:
         current_reserve = money(total_savings)
         savings_target_remaining = max(ZERO, money(savings_target - total_savings))
         reserve_gap = max(ZERO, money(minimum_reserve - current_reserve))
-        upcoming = upcoming_mandatory(recurring_payments, today, period_end)
+        upcoming = mandatory_for_period(recurring_payments, period_start, period_end)
         mandatory_remaining = money(sum((payment.amount for payment in upcoming), ZERO))
 
         available = money(balance - mandatory_remaining - savings_target_remaining - reserve_gap)
@@ -221,20 +228,61 @@ def sum_type(transactions: list[Transaction], tx_type: TransactionType) -> Decim
     return money(sum((tx.amount for tx in transactions if tx.type == tx_type), ZERO))
 
 
-def upcoming_mandatory(
-    payments: list[RecurringPayment], today: date, period_end: date
-) -> list[RecurringPayment]:
-    upcoming: list[RecurringPayment] = []
+def mandatory_for_period(
+    payments: list[RecurringPayment], period_start: date, period_end: date
+) -> list[PeriodMandatoryPayment]:
+    upcoming: list[PeriodMandatoryPayment] = []
     for payment in payments:
         if not payment.is_active or not payment.is_mandatory:
             continue
-        due = payment.next_payment_date
-        if due is None and payment.payment_day:
-            day = min(payment.payment_day, calendar.monthrange(today.year, today.month)[1])
-            due = date(today.year, today.month, day)
-        if due is not None and today <= due <= period_end:
-            upcoming.append(payment)
+        due_dates = recurring_due_dates_for_period(payment, period_start, period_end)
+        upcoming.extend(
+            PeriodMandatoryPayment(name=payment.name, amount=payment.amount, payment_date=due_date)
+            for due_date in due_dates
+        )
     return upcoming
+
+
+def recurring_due_dates_for_period(
+    payment: RecurringPayment, period_start: date, period_end: date
+) -> list[date]:
+    if payment.next_payment_date is not None:
+        if period_start <= payment.next_payment_date <= period_end:
+            return [payment.next_payment_date]
+        if payment.frequency == "one_time":
+            return []
+
+    if not payment.payment_day:
+        return []
+
+    if payment.frequency == "weekly":
+        due = payment.next_payment_date or period_start
+        while due < period_start:
+            due += timedelta(days=7)
+        dates: list[date] = []
+        while due <= period_end:
+            dates.append(due)
+            due += timedelta(days=7)
+        return dates
+
+    if payment.frequency == "yearly":
+        day = min(
+            payment.payment_day,
+            calendar.monthrange(period_start.year, period_start.month)[1],
+        )
+        due = date(period_start.year, period_start.month, day)
+        return [due] if period_start <= due <= period_end else []
+
+    dates = []
+    cursor = date(period_start.year, period_start.month, 1)
+    last_month = date(period_end.year, period_end.month, 1)
+    while cursor <= last_month:
+        day = min(payment.payment_day, calendar.monthrange(cursor.year, cursor.month)[1])
+        due = date(cursor.year, cursor.month, day)
+        if period_start <= due <= period_end:
+            dates.append(due)
+        cursor = (cursor.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return dates
 
 
 def next_income_date(today: date, budget: MonthlyBudget | None) -> date:

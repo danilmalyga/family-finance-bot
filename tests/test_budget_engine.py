@@ -109,6 +109,22 @@ def test_mandatory_reserve_and_daily_limit() -> None:
     assert snapshot.safe_daily_limit == Decimal("7.89")
 
 
+def test_mandatory_payments_in_salary_period_are_reserved_after_due_day() -> None:
+    item = budget()
+    item.salary_day = 10
+    snapshot = BudgetEngine().build_snapshot(
+        date(2026, 7, 13),
+        [tx(TransactionType.INCOME, "4000", transaction_date=date(2026, 7, 10))],
+        item,
+        [payment("1000", payment_day=10), payment("1150", payment_day=12)],
+        [],
+    )
+
+    assert snapshot.period_start == date(2026, 7, 10)
+    assert snapshot.mandatory_remaining == Decimal("2150.00")
+    assert snapshot.available_to_spend <= Decimal("1850.00")
+
+
 def test_purchase_approve() -> None:
     snapshot = BudgetEngine().build_snapshot(
         date(2026, 7, 12),

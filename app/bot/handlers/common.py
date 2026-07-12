@@ -112,7 +112,7 @@ async def month_report(message: Message) -> None:
         f"Накопления: {fmt_money(snapshot.total_savings)}",
         "",
         f"Реальный остаток: {fmt_money(snapshot.balance)}",
-        f"Оставшиеся обязательные платежи: {fmt_money(snapshot.mandatory_remaining)}",
+        f"Обязательные платежи периода: {fmt_money(snapshot.mandatory_remaining)}",
         f"Остаток цели накоплений: {fmt_money(snapshot.savings_target_remaining)}",
         f"Недобор резерва: {fmt_money(snapshot.reserve_gap)}",
         "",

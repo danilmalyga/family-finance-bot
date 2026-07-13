@@ -108,6 +108,8 @@ async def month_report(message: Message) -> None:
         "",
         f"Доходы: {fmt_money(snapshot.total_income)}",
         f"Расходы: {fmt_money(snapshot.total_expenses)}",
+        f"Обычные траты в расчёте: {fmt_money(snapshot.discretionary_spent)}",
+        f"Резерв продуктов цикла: {fmt_money(snapshot.groceries_cycle_reserved)}",
         f"Долги: {fmt_money(snapshot.total_debt_payments)}",
         f"Накопления: {fmt_money(snapshot.total_savings)}",
         "",
@@ -127,6 +129,8 @@ async def month_report(message: Message) -> None:
             f"Период: {groceries.week_start:%d.%m} — {groceries.week_end:%d.%m}",
             f"Потрачено: {fmt_money(groceries.spent)} / {fmt_money(groceries.weekly_limit)}",
             f"Осталось до {weekday_name(groceries.next_week_start.isoweekday())}: {fmt_money(groceries.remaining)}",
+            f"В зарплатном цикле зарезервировано: {fmt_money(snapshot.groceries_cycle_reserved)}",
+            f"Оставшиеся плановые недели: {snapshot.groceries_cycle_remaining_weeks}",
             "",
         ]
     lines.append("Основные категории:")

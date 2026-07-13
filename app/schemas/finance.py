@@ -40,6 +40,10 @@ class FinancialSnapshot(BaseModel):
     total_expenses: Decimal
     total_savings: Decimal
     total_debt_payments: Decimal
+    discretionary_spent: Decimal = Decimal("0.00")
+    groceries_cycle_spent: Decimal = Decimal("0.00")
+    groceries_cycle_reserved: Decimal = Decimal("0.00")
+    groceries_cycle_remaining_weeks: int = 0
     balance: Decimal
     mandatory_remaining: Decimal
     savings_target: Decimal

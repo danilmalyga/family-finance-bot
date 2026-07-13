@@ -60,11 +60,14 @@ def budget_with_groceries() -> MonthlyBudget:
     return item
 
 
-def payment(amount: str, payment_day: int = 20) -> RecurringPayment:
+def payment(
+    amount: str, payment_day: int = 20, category_id: uuid.UUID | None = None
+) -> RecurringPayment:
     return RecurringPayment(
         family_id=uuid.uuid4(),
         name="mandatory",
         amount=Decimal(amount),
+        category_id=category_id,
         payment_day=payment_day,
         frequency="monthly",
         is_mandatory=True,
@@ -124,6 +127,90 @@ def test_mandatory_payments_in_salary_period_are_reserved_after_due_day() -> Non
     assert snapshot.mandatory_remaining == Decimal("2150.00")
     assert snapshot.available_to_spend <= Decimal("1850.00")
     assert snapshot.upcoming_payments[0].payment_date == date(2026, 7, 10)
+
+
+def test_available_uses_salary_cycle_income_discretionary_spent_and_mandatory_total() -> None:
+    item = budget()
+    item.salary_day = 10
+    item.savings_target = Decimal("0.00")
+    item.minimum_reserve = Decimal("0.00")
+    housing = category("housing")
+    groceries = category("groceries")
+    snapshot = BudgetEngine().build_snapshot(
+        date(2026, 7, 13),
+        [
+            tx(TransactionType.INCOME, "4000", transaction_date=date(2026, 7, 10)),
+            tx(
+                TransactionType.EXPENSE,
+                "100",
+                category_id=groceries.id,
+                transaction_date=date(2026, 7, 13),
+            ),
+        ],
+        item,
+        [payment("1000", payment_day=1, category_id=housing.id)],
+        [housing, groceries],
+    )
+
+    assert snapshot.period_start == date(2026, 7, 10)
+    assert snapshot.period_end == date(2026, 8, 9)
+    assert snapshot.discretionary_spent == Decimal("100.00")
+    assert snapshot.mandatory_remaining == Decimal("1000.00")
+    assert snapshot.available_to_spend == Decimal("2900.00")
+
+
+def test_available_reserves_four_grocery_weeks_after_salary() -> None:
+    item = budget_with_groceries()
+    item.savings_target = Decimal("0.00")
+    item.minimum_reserve = Decimal("0.00")
+    groceries = category("groceries")
+    snapshot = BudgetEngine().build_snapshot(
+        date(2026, 7, 10),
+        [tx(TransactionType.INCOME, "4000", transaction_date=date(2026, 7, 10))],
+        item,
+        [payment("1000", payment_day=1)],
+        [groceries],
+    )
+
+    assert snapshot.groceries_cycle_spent == Decimal("0.00")
+    assert snapshot.groceries_cycle_remaining_weeks == 4
+    assert snapshot.groceries_cycle_reserved == Decimal("800.00")
+    assert snapshot.available_to_spend == Decimal("2200.00")
+
+
+def test_available_reserves_spent_groceries_plus_remaining_weeks_mid_cycle() -> None:
+    item = budget_with_groceries()
+    item.savings_target = Decimal("0.00")
+    item.minimum_reserve = Decimal("0.00")
+    groceries = category("groceries")
+    entertainment = category("entertainment")
+    snapshot = BudgetEngine().build_snapshot(
+        date(2026, 7, 24),
+        [
+            tx(TransactionType.INCOME, "4000", transaction_date=date(2026, 7, 10)),
+            tx(
+                TransactionType.EXPENSE,
+                "350",
+                category_id=groceries.id,
+                transaction_date=date(2026, 7, 17),
+            ),
+            tx(
+                TransactionType.EXPENSE,
+                "100",
+                category_id=entertainment.id,
+                transaction_date=date(2026, 7, 20),
+            ),
+        ],
+        item,
+        [payment("1000", payment_day=1)],
+        [groceries, entertainment],
+    )
+
+    assert snapshot.groceries_cycle_spent == Decimal("350.00")
+    assert snapshot.groceries_cycle_remaining_weeks == 2
+    assert snapshot.groceries_cycle_reserved == Decimal("750.00")
+    assert snapshot.discretionary_spent == Decimal("100.00")
+    assert snapshot.available_to_spend == Decimal("2150.00")
 
 
 def test_purchase_approve() -> None:

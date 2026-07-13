@@ -45,7 +45,12 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
     available_pct = percent(max(Decimal("0"), snapshot.available_to_spend), snapshot.balance)  # type: ignore[attr-defined]
     reserve_pct = percent(snapshot.current_reserve, snapshot.minimum_reserve)  # type: ignore[attr-defined]
     groceries_donut = render_groceries_donut(snapshot.groceries_week)  # type: ignore[attr-defined]
-    period_spent = snapshot.total_expenses + snapshot.total_debt_payments + snapshot.total_savings  # type: ignore[attr-defined]
+    period_spent = (  # type: ignore[attr-defined]
+        snapshot.discretionary_spent
+        + snapshot.mandatory_remaining
+        + snapshot.groceries_cycle_reserved
+        + snapshot.total_savings
+    )
     period_donut = render_donut(
         "Период от зарплаты",
         period_spent,
@@ -197,6 +202,7 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
       {kpi("Реальный остаток", snapshot.balance)}
       {kpi("Доступно к тратам", snapshot.available_to_spend, "good" if snapshot.available_to_spend >= 0 else "bad")}
       {kpi("Расходы периода", snapshot.total_expenses, "warn")}
+      {kpi("Обычные траты", snapshot.discretionary_spent, "warn")}
       {kpi("Лимит в день", snapshot.safe_daily_limit, "blue")}
     </section>
 

@@ -96,8 +96,39 @@ class BudgetEngine:
         reserve_gap = max(ZERO, money(minimum_reserve - current_reserve))
         upcoming = mandatory_for_period(recurring_payments, period_start, period_end)
         mandatory_remaining = money(sum((payment.amount for payment in upcoming), ZERO))
+        mandatory_category_ids = {
+            payment.category_id for payment in recurring_payments if payment.category_id is not None
+        }
+        groceries_codes = groceries_category_codes(categories)
+        groceries_cycle_spent = sum_expenses_for_category_codes(
+            period_confirmed,
+            groceries_codes,
+            period_start,
+            today,
+            categories,
+        )
+        groceries_cycle_remaining_weeks = groceries_remaining_weeks(period_start, today)
+        groceries_cycle_reserved = groceries_cycle_reserve(
+            budget,
+            groceries_cycle_spent,
+            groceries_cycle_remaining_weeks,
+        )
+        discretionary_spent = sum_discretionary_spent(
+            period_confirmed,
+            mandatory_category_ids,
+            groceries_codes,
+            categories,
+        )
 
-        available = money(balance - mandatory_remaining - savings_target_remaining - reserve_gap)
+        available = money(
+            total_income
+            - discretionary_spent
+            - total_savings
+            - mandatory_remaining
+            - groceries_cycle_reserved
+            - savings_target_remaining
+            - reserve_gap
+        )
         next_income = next_income_date(today, budget)
         days_until_income = max(1, (next_income - today).days)
         safe_daily = money(max(ZERO, available) / Decimal(days_until_income))
@@ -111,6 +142,10 @@ class BudgetEngine:
             total_expenses=total_expenses,
             total_savings=total_savings,
             total_debt_payments=total_debt,
+            discretionary_spent=discretionary_spent,
+            groceries_cycle_spent=groceries_cycle_spent,
+            groceries_cycle_reserved=groceries_cycle_reserved,
+            groceries_cycle_remaining_weeks=groceries_cycle_remaining_weeks,
             balance=balance,
             mandatory_remaining=mandatory_remaining,
             savings_target=savings_target,
@@ -226,6 +261,75 @@ def salary_cycle_anchor(year: int, month: int, salary_day: int) -> date:
 
 def sum_type(transactions: list[Transaction], tx_type: TransactionType) -> Decimal:
     return money(sum((tx.amount for tx in transactions if tx.type == tx_type), ZERO))
+
+
+def sum_discretionary_spent(
+    transactions: list[Transaction],
+    mandatory_category_ids: set[uuid.UUID],
+    excluded_category_codes: set[str],
+    categories: list[Category],
+) -> Decimal:
+    category_by_id = {category.id: category for category in categories}
+    spending_types = {TransactionType.EXPENSE, TransactionType.DEBT_PAYMENT}
+    total = ZERO
+    for tx in transactions:
+        if tx.type not in spending_types:
+            continue
+        categorized_items = [item for item in tx.items if item.category_id is not None]
+        if categorized_items:
+            item_total = ZERO
+            for item in categorized_items:
+                item_total = money(item_total + item.total_amount)
+                category = category_by_id.get(item.category_id)
+                if category is None:
+                    total = money(total + item.total_amount)
+                    continue
+                if item.category_id in mandatory_category_ids or category.code in excluded_category_codes:
+                    continue
+                total = money(total + item.total_amount)
+            diff = money(tx.amount - item_total)
+            if abs(diff) > Decimal("0.02") and not is_excluded_category(
+                tx.category_id,
+                mandatory_category_ids,
+                excluded_category_codes,
+                category_by_id,
+            ):
+                total = money(total + diff)
+            continue
+        if tx.category_id is not None and tx.category_id in mandatory_category_ids:
+            continue
+        category = category_by_id.get(tx.category_id) if tx.category_id else None
+        if category and category.code in excluded_category_codes:
+            continue
+        total = money(total + tx.amount)
+    return total
+
+
+def is_excluded_category(
+    category_id: uuid.UUID | None,
+    mandatory_category_ids: set[uuid.UUID],
+    excluded_category_codes: set[str],
+    category_by_id: dict[uuid.UUID, Category],
+) -> bool:
+    if category_id is None:
+        return False
+    if category_id in mandatory_category_ids:
+        return True
+    category = category_by_id.get(category_id)
+    return category is not None and category.code in excluded_category_codes
+
+
+def groceries_remaining_weeks(period_start: date, today: date) -> int:
+    elapsed_weeks = max(0, (today - period_start).days // 7)
+    return max(0, 4 - elapsed_weeks)
+
+
+def groceries_cycle_reserve(
+    budget: MonthlyBudget | None, groceries_spent: Decimal, remaining_weeks: int
+) -> Decimal:
+    if budget is None or budget.groceries_weekly_limit <= ZERO:
+        return ZERO
+    return money(groceries_spent + money(budget.groceries_weekly_limit) * Decimal(remaining_weeks))
 
 
 def mandatory_for_period(

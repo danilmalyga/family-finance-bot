@@ -119,6 +119,9 @@ class BudgetEngine:
             groceries_codes,
             categories,
         )
+        cycle_balance_after_plan = money(
+            total_income - mandatory_remaining - groceries_cycle_reserved
+        )
 
         available = money(
             total_income
@@ -146,6 +149,7 @@ class BudgetEngine:
             groceries_cycle_spent=groceries_cycle_spent,
             groceries_cycle_reserved=groceries_cycle_reserved,
             groceries_cycle_remaining_weeks=groceries_cycle_remaining_weeks,
+            cycle_balance_after_plan=cycle_balance_after_plan,
             balance=balance,
             mandatory_remaining=mandatory_remaining,
             savings_target=savings_target,

@@ -175,6 +175,7 @@ def test_available_reserves_four_grocery_weeks_after_salary() -> None:
     assert snapshot.groceries_cycle_spent == Decimal("0.00")
     assert snapshot.groceries_cycle_remaining_weeks == 4
     assert snapshot.groceries_cycle_reserved == Decimal("800.00")
+    assert snapshot.cycle_balance_after_plan == Decimal("2200.00")
     assert snapshot.available_to_spend == Decimal("2200.00")
 
 
@@ -209,6 +210,7 @@ def test_available_reserves_spent_groceries_plus_remaining_weeks_mid_cycle() -> 
     assert snapshot.groceries_cycle_spent == Decimal("350.00")
     assert snapshot.groceries_cycle_remaining_weeks == 2
     assert snapshot.groceries_cycle_reserved == Decimal("750.00")
+    assert snapshot.cycle_balance_after_plan == Decimal("2250.00")
     assert snapshot.discretionary_spent == Decimal("100.00")
     assert snapshot.available_to_spend == Decimal("2150.00")
 

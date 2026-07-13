@@ -41,8 +41,9 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
     upcoming_rows = render_upcoming_rows(snapshot.upcoming_payments)  # type: ignore[attr-defined]
     confirmed_rows = render_transaction_rows(confirmed)
     draft_rows = render_transaction_rows(draft)
-    mandatory_pct = percent(snapshot.mandatory_remaining, snapshot.balance)  # type: ignore[attr-defined]
-    available_pct = percent(max(Decimal("0"), snapshot.available_to_spend), snapshot.balance)  # type: ignore[attr-defined]
+    planned_balance = snapshot.cycle_balance_after_plan  # type: ignore[attr-defined]
+    mandatory_pct = percent(snapshot.mandatory_remaining, snapshot.total_income)  # type: ignore[attr-defined]
+    available_pct = percent(max(Decimal("0"), snapshot.available_to_spend), snapshot.total_income)  # type: ignore[attr-defined]
     reserve_pct = percent(snapshot.current_reserve, snapshot.minimum_reserve)  # type: ignore[attr-defined]
     groceries_donut = render_groceries_donut(snapshot.groceries_week)  # type: ignore[attr-defined]
     period_spent = (  # type: ignore[attr-defined]
@@ -54,7 +55,7 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
     period_donut = render_donut(
         "Период от зарплаты",
         period_spent,
-        max(Decimal("0"), snapshot.balance),  # type: ignore[attr-defined]
+        max(Decimal("0"), snapshot.available_to_spend),  # type: ignore[attr-defined]
         "использовано",
         "остаток",
     )
@@ -236,7 +237,7 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
   </header>
   <main>
     <section class="kpis">
-      {kpi("Реальный остаток", snapshot.balance)}
+      {kpi("Реальный остаток", planned_balance)}
       {kpi("Доступно к тратам", snapshot.available_to_spend, "good" if snapshot.available_to_spend >= 0 else "bad")}
       {kpi("Расходы периода", snapshot.total_expenses, "warn")}
       {kpi("Обычные траты", snapshot.discretionary_spent, "warn")}
@@ -254,6 +255,8 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
         {metric("Доступно после обязательных платежей, накоплений и резерва", snapshot.available_to_spend, available_pct, "good")}
         {metric("Обязательные платежи периода", snapshot.mandatory_remaining, mandatory_pct, "warn")}
         {metric("Резерв", snapshot.current_reserve, reserve_pct, "blue", suffix=f"из {format_money(snapshot.minimum_reserve)}")}
+        <div class="row"><div class="name muted">Фактический баланс операций</div><div class="amount">{format_money(snapshot.balance)}</div></div>
+        <div class="row"><div class="name muted">Резерв продуктов цикла</div><div class="amount">{format_money(snapshot.groceries_cycle_reserved)}</div></div>
         <div class="row"><div class="name muted">Остаток цели накоплений</div><div class="amount">{format_money(snapshot.savings_target_remaining)}</div></div>
         <div class="row"><div class="name muted">Недобор резерва</div><div class="amount">{format_money(snapshot.reserve_gap)}</div></div>
         <div class="row"><div class="name muted">До следующего дохода</div><div class="amount">{snapshot.days_until_next_income} дн.</div></div>

@@ -44,6 +44,7 @@ class FinancialSnapshot(BaseModel):
     groceries_cycle_spent: Decimal = Decimal("0.00")
     groceries_cycle_reserved: Decimal = Decimal("0.00")
     groceries_cycle_remaining_weeks: int = 0
+    cycle_balance_after_plan: Decimal = Decimal("0.00")
     balance: Decimal
     mandatory_remaining: Decimal
     savings_target: Decimal

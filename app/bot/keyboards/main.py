@@ -9,14 +9,20 @@ from aiogram.types import (
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="✅ Зарплата пришла")],
-            [KeyboardButton(text="📷 Отправить чек"), KeyboardButton(text="➕ Добавить расход")],
-            [KeyboardButton(text="💰 Добавить доход"), KeyboardButton(text="🛒 Можно ли купить?")],
-            [KeyboardButton(text="📊 Отчёт"), KeyboardButton(text="📈 Инфографика")],
-            [KeyboardButton(text="❤️ Список желаний")],
+            [KeyboardButton(text="❤️ Список желаний"), KeyboardButton(text="📷 Отправить чек")],
+            [KeyboardButton(text="📊 Отчёт"), KeyboardButton(text="➕ Добавить расход")],
+            [KeyboardButton(text="📈 Инфографика"), KeyboardButton(text="🛒 Можно ли купить?")],
             [KeyboardButton(text="⚙️ Настройки")],
         ],
         resize_keyboard=True,
+    )
+
+
+def back_to_main_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="⬅️ Главное меню")]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
     )
 
 
@@ -65,7 +71,9 @@ def settings_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="План зарплатного цикла", callback_data="settings:budget")],
-            [InlineKeyboardButton(text="Продукты на неделю", callback_data="settings:groceries")],
+            [InlineKeyboardButton(text="Зарплата пришла", callback_data="settings:salary")],
+            [InlineKeyboardButton(text="Добавить доход вручную", callback_data="settings:income")],
+            [InlineKeyboardButton(text="Бюджет продуктов на неделю", callback_data="settings:groceries")],
             [InlineKeyboardButton(text="Обязательный платёж", callback_data="settings:payment")],
         ]
     )

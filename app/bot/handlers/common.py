@@ -11,6 +11,7 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 
 from app.bot.keyboards.main import (
+    back_to_main_menu,
     category_keyboard,
     draft_keyboard,
     main_menu,
@@ -50,6 +51,14 @@ async def get_user(message: Message) -> User | None:
         except AccessDeniedError:
             await message.answer("Доступ к семейному бюджету ограничен.")
             return None
+
+
+async def return_to_main_menu_if_requested(message: Message, state: FSMContext) -> bool:
+    if message.text != "⬅️ Главное меню":
+        return False
+    await state.clear()
+    await message.answer("Главное меню.", reply_markup=main_menu())
+    return True
 
 
 @router.message(Command("start"))
@@ -166,13 +175,13 @@ async def categories(message: Message) -> None:
 @router.message(F.text == "➕ Добавить расход")
 async def ask_expense(message: Message, state: FSMContext) -> None:
     await state.set_state(AddExpense.waiting_text)
-    await message.answer("Введите расход, например: Mercadona 38.40")
+    await message.answer("Введите расход, например: Mercadona 38.40", reply_markup=back_to_main_menu())
 
 
 @router.message(F.text == "💰 Добавить доход")
 async def ask_income(message: Message, state: FSMContext) -> None:
     await state.set_state(AddIncome.waiting_text)
-    await message.answer("Введите доход, например: +3400 зарплата")
+    await message.answer("Введите доход, например: +3400 зарплата", reply_markup=back_to_main_menu())
 
 
 @router.message(F.text == "✅ Зарплата пришла")
@@ -229,23 +238,32 @@ async def salary_received(message: Message) -> None:
 @router.message(F.text == "🛒 Можно ли купить?")
 async def ask_purchase(message: Message, state: FSMContext) -> None:
     await state.set_state(PurchaseCheck.waiting_text)
-    await message.answer("Введите покупку и сумму, например: Парфюм 140 евро")
+    await message.answer(
+        "Введите покупку и сумму, например: Парфюм 140 евро",
+        reply_markup=back_to_main_menu(),
+    )
 
 
 @router.message(AddExpense.waiting_text)
 async def expense_text(message: Message, state: FSMContext) -> None:
+    if await return_to_main_menu_if_requested(message, state):
+        return
     await handle_text_transaction(message)
     await state.clear()
 
 
 @router.message(AddIncome.waiting_text)
 async def income_text(message: Message, state: FSMContext) -> None:
+    if await return_to_main_menu_if_requested(message, state):
+        return
     await handle_text_transaction(message)
     await state.clear()
 
 
 @router.message(SettingsFlow.waiting_budget)
 async def budget_settings_text(message: Message, state: FSMContext) -> None:
+    if await return_to_main_menu_if_requested(message, state):
+        return
     user = await get_user(message)
     if user is None or not message.text:
         return
@@ -302,6 +320,8 @@ async def budget_settings_text(message: Message, state: FSMContext) -> None:
 
 @router.message(SettingsFlow.waiting_payment)
 async def payment_settings_text(message: Message, state: FSMContext) -> None:
+    if await return_to_main_menu_if_requested(message, state):
+        return
     user = await get_user(message)
     if user is None or not message.text:
         return
@@ -332,6 +352,8 @@ async def payment_settings_text(message: Message, state: FSMContext) -> None:
 
 @router.message(SettingsFlow.waiting_groceries_budget)
 async def groceries_budget_settings_text(message: Message, state: FSMContext) -> None:
+    if await return_to_main_menu_if_requested(message, state):
+        return
     user = await get_user(message)
     if user is None or not message.text:
         return
@@ -367,6 +389,8 @@ async def groceries_budget_settings_text(message: Message, state: FSMContext) ->
 
 @router.message(PurchaseCheck.waiting_text)
 async def purchase_text(message: Message, state: FSMContext) -> None:
+    if await return_to_main_menu_if_requested(message, state):
+        return
     user = await get_user(message)
     if user is None or not message.text:
         return
@@ -639,7 +663,8 @@ async def settings_budget_callback(callback: CallbackQuery, state: FSMContext) -
         "доход накопления резерв день_зарплаты\n"
         "Например: 3400 300 1500 10\n\n"
         "Можно сразу добавить недельный лимит продуктов:\n"
-        "3400 300 1500 10 200 вторник"
+        "3400 300 1500 10 200 вторник",
+        reply_markup=back_to_main_menu(),
     )
     await callback.answer()
 
@@ -647,14 +672,31 @@ async def settings_budget_callback(callback: CallbackQuery, state: FSMContext) -
 @router.callback_query(F.data == "settings:groceries")
 async def settings_groceries_callback(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(SettingsFlow.waiting_groceries_budget)
-    await callback.message.answer(groceries_budget_help())  # type: ignore[union-attr]
+    await callback.message.answer(groceries_budget_help(), reply_markup=back_to_main_menu())  # type: ignore[union-attr]
+    await callback.answer()
+
+
+@router.callback_query(F.data == "settings:income")
+async def settings_income_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AddIncome.waiting_text)
+    await callback.message.answer(  # type: ignore[union-attr]
+        "Введите доход, например: +3400 зарплата",
+        reply_markup=back_to_main_menu(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "settings:salary")
+async def settings_salary_callback(callback: CallbackQuery) -> None:
+    if callback.message is not None:
+        await salary_received(callback.message)
     await callback.answer()
 
 
 @router.callback_query(F.data == "settings:payment")
 async def settings_payment_callback(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(SettingsFlow.waiting_payment)
-    await callback.message.answer(payment_settings_help())  # type: ignore[union-attr]
+    await callback.message.answer(payment_settings_help(), reply_markup=back_to_main_menu())  # type: ignore[union-attr]
     await callback.answer()
 
 

@@ -271,12 +271,12 @@ def render_groceries_donut(groceries_week: object | None) -> str:
     if groceries_week is None:
         return """
           <div class="card">
-            <h2>Продукты на неделю</h2>
+            <h2>Бюджет продуктов на неделю</h2>
             <div class="muted">Недельный лимит продуктов не настроен.</div>
           </div>
         """
     title = (
-        "Продукты на неделю "
+        "Бюджет продуктов на неделю "
         f"{format_date(groceries_week.week_start)} — {format_date(groceries_week.week_end)}"  # type: ignore[attr-defined]
     )
     return render_donut(

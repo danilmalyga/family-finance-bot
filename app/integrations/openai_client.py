@@ -1,13 +1,15 @@
 import base64
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, RateLimitError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.config import Settings
 from app.domain.enums import PurchaseDecision, TransactionType
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 class OpenAIUnavailableError(Exception):
@@ -131,9 +133,9 @@ class OpenAIClient:
             model_cls=PurchaseExplanation,
         )
 
-    async def _json_call[T: BaseModel](
-        self, prompt: str, payload: dict[str, Any], model_cls: type[T]
-    ) -> T:
+    async def _json_call(
+        self, prompt: str, payload: dict[str, Any], model_cls: type[ModelT]
+    ) -> ModelT:
         if not self.settings.openai_model:
             raise OpenAIUnavailableError("OPENAI_MODEL is not configured")
         try:
@@ -165,7 +167,7 @@ class OpenAIClient:
             raise OpenAIUnavailableError(str(exc)) from exc
 
 
-def parse_model_json[T: BaseModel](content: str, model_cls: type[T]) -> T:
+def parse_model_json(content: str, model_cls: type[ModelT]) -> ModelT:
     return model_cls.model_validate_json(content)
 
 

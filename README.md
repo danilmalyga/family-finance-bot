@@ -261,6 +261,7 @@ APP_HOST=0.0.0.0
 DATABASE_URL=postgresql+asyncpg://...
 DATABASE_SSL=true
 PUBLIC_BASE_URL=https://your-app.onrender.com
+BOT_ENABLED=false
 TELEGRAM_BOT_TOKEN=...
 ALLOWED_TELEGRAM_USER_IDS=...
 OPENAI_API_KEY=...
@@ -279,7 +280,8 @@ https://your-app.onrender.com/health
 https://your-app.onrender.com/dashboard?key=API_SECRET_KEY
 ```
 
-Для MVP бот продолжает работать через Telegram polling внутри Web Service. Следующий production-шаг — перевести Telegram на webhook.
+Если Telegram polling работает на iMac, держите на Render `BOT_ENABLED=false`: Render будет отдавать dashboard/API, но не будет конфликтовать с ботом.
+На iMac используйте `BOT_ENABLED=true` и `PUBLIC_BASE_URL=https://your-app.onrender.com`, чтобы кнопка инфографики открывала Render dashboard.
 
 ## Ограничения MVP
 

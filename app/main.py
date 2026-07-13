@@ -17,7 +17,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
     bot_task: asyncio.Task[None] | None = None
-    if settings.telegram_bot_token:
+    if settings.bot_enabled and settings.telegram_bot_token:
         bot_task = asyncio.create_task(start_bot())
     yield
     if bot_task:

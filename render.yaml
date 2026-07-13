@@ -16,6 +16,8 @@ services:
         value: "true"
       - key: PUBLIC_BASE_URL
         sync: false
+      - key: BOT_ENABLED
+        value: "false"
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: ALLOWED_TELEGRAM_USER_IDS

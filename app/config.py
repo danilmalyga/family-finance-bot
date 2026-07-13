@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     database_url: str
     database_ssl: bool = False
     public_base_url: str | None = None
+    bot_enabled: bool = True
 
     telegram_bot_token: SecretStr | None = None
     allowed_telegram_user_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)

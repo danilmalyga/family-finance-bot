@@ -204,6 +204,15 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
       color: var(--muted);
       font-size: 13px;
     }}
+    .payment-line {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      padding: 10px 0;
+      border-top: 1px solid var(--line);
+      align-items: baseline;
+    }}
+    .payment-line:first-child {{ border-top: 0; padding-top: 0; }}
     .payment-amount {{
       font-variant-numeric: tabular-nums;
       font-weight: 700;
@@ -377,14 +386,10 @@ def render_upcoming_rows(payments: list[object]) -> str:
         return '<div class="muted">До конца периода обязательных платежей не найдено.</div>'
     rows = []
     for payment in payments:
-        payment_date = format_date(payment.payment_date) if payment.payment_date else "скоро"  # type: ignore[attr-defined]
         rows.append(
             f"""
-            <div class="payment-item">
-              <div>
-                <div class="payment-title">{escape(clean_payment_name(payment.name))}</div>
-                <div class="payment-date">{payment_date}</div>
-              </div>
+            <div class="payment-line">
+              <div class="payment-title">{escape(clean_payment_name(payment.name))}</div>
               <div class="payment-amount">{format_money(payment.amount)}</div>
             </div>
             """  # type: ignore[attr-defined]

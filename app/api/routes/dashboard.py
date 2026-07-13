@@ -182,6 +182,34 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
     }}
     .swatch {{ width: 12px; height: 12px; border-radius: 3px; background: var(--accent); }}
     .swatch.rest {{ background: #e6eaf0; border: 1px solid var(--line); }}
+    .payments-list {{
+      display: grid;
+      gap: 10px;
+    }}
+    .payment-item {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      padding: 11px 0;
+      border-top: 1px solid var(--line);
+      align-items: start;
+    }}
+    .payment-item:first-child {{ border-top: 0; padding-top: 0; }}
+    .payment-title {{
+      font-weight: 650;
+      overflow-wrap: anywhere;
+    }}
+    .payment-date {{
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 13px;
+    }}
+    .payment-amount {{
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+      white-space: nowrap;
+      text-align: right;
+    }}
     @media (max-width: 900px) {{
       .kpis, .grid, .two, .donuts {{ grid-template-columns: 1fr; }}
       .donut-card {{ grid-template-columns: 120px minmax(0, 1fr); }}
@@ -351,9 +379,17 @@ def render_upcoming_rows(payments: list[object]) -> str:
     for payment in payments:
         payment_date = format_date(payment.payment_date) if payment.payment_date else "скоро"  # type: ignore[attr-defined]
         rows.append(
-            f'<div class="row"><div class="name">{escape(payment.name)}<div class="muted">{payment_date}</div></div><div class="amount">{format_money(payment.amount)}</div></div>'  # type: ignore[attr-defined]
+            f"""
+            <div class="payment-item">
+              <div>
+                <div class="payment-title">{escape(clean_payment_name(payment.name))}</div>
+                <div class="payment-date">{payment_date}</div>
+              </div>
+              <div class="payment-amount">{format_money(payment.amount)}</div>
+            </div>
+            """  # type: ignore[attr-defined]
         )
-    return "\n".join(rows)
+    return f'<div class="payments-list">{"".join(rows)}</div>'
 
 
 def render_transaction_rows(transactions: list[object]) -> str:
@@ -366,6 +402,25 @@ def render_transaction_rows(transactions: list[object]) -> str:
             f'<div class="row"><div class="name">{escape(title)}<div class="muted">{format_date(tx.transaction_date)}</div></div><div class="amount">{format_money(tx.amount)}</div></div>'  # type: ignore[attr-defined]
         )
     return "\n".join(rows)
+
+
+def clean_payment_name(name: str) -> str:
+    parts = name.split()
+    if len(parts) < 4:
+        return name
+    amount_part = parts[-3].replace(",", ".")
+    day_part = parts[-2]
+    if is_decimal_text(amount_part) and day_part.isdigit():
+        return " ".join(parts[:-3]) or name
+    return name
+
+
+def is_decimal_text(value: str) -> bool:
+    try:
+        Decimal(value)
+    except Exception:
+        return False
+    return True
 
 
 def percent(value: Decimal, total: Decimal | None) -> int:

@@ -38,6 +38,14 @@ class PeriodMandatoryPayment:
     payment_date: date | None
 
 
+@dataclass(frozen=True)
+class GroceryCycleReserve:
+    actual_spent: Decimal
+    future_reserved: Decimal
+    total_reserved: Decimal
+    future_weeks: int
+
+
 class BudgetEngine:
     """Calculates family budget state and purchase decisions without using AI."""
 
@@ -100,23 +108,19 @@ class BudgetEngine:
             payment.category_id for payment in recurring_payments if payment.category_id is not None
         }
         groceries_codes = groceries_category_codes(categories)
-        groceries_cycle_spent = sum_expenses_for_category_codes(
-            period_confirmed,
-            groceries_codes,
-            period_start,
+        groceries_reserve = groceries_cycle_reserve(
             today,
+            period_start,
+            period_end,
+            period_confirmed,
+            budget,
             categories,
         )
-        groceries_cycle_remaining_weeks = groceries_remaining_weeks(period_start, today)
-        groceries_cycle_reserved = groceries_cycle_reserve(
-            budget,
-            groceries_cycle_spent,
-            groceries_cycle_remaining_weeks,
-        )
+        groceries_cycle_reserved = groceries_reserve.total_reserved
         discretionary_spent = sum_discretionary_spent(
             period_confirmed,
             mandatory_category_ids,
-            groceries_codes,
+            groceries_codes if groceries_cycle_reserved > ZERO else set(),
             categories,
         )
         cycle_balance_after_plan = money(
@@ -134,7 +138,7 @@ class BudgetEngine:
         )
         next_income = next_income_date(today, budget)
         days_until_income = max(1, (next_income - today).days)
-        safe_daily = money(max(ZERO, available) / Decimal(days_until_income))
+        safe_daily = money(available / Decimal(days_until_income))
 
         summaries = category_summaries(period_confirmed, categories)
         groceries_week = groceries_week_summary(today, confirmed, budget, categories)
@@ -146,9 +150,9 @@ class BudgetEngine:
             total_savings=total_savings,
             total_debt_payments=total_debt,
             discretionary_spent=discretionary_spent,
-            groceries_cycle_spent=groceries_cycle_spent,
-            groceries_cycle_reserved=groceries_cycle_reserved,
-            groceries_cycle_remaining_weeks=groceries_cycle_remaining_weeks,
+            groceries_cycle_spent=groceries_reserve.actual_spent,
+            groceries_cycle_reserved=groceries_reserve.total_reserved,
+            groceries_cycle_remaining_weeks=groceries_reserve.future_weeks,
             cycle_balance_after_plan=cycle_balance_after_plan,
             balance=balance,
             mandatory_remaining=mandatory_remaining,
@@ -323,17 +327,64 @@ def is_excluded_category(
     return category is not None and category.code in excluded_category_codes
 
 
-def groceries_remaining_weeks(period_start: date, today: date) -> int:
-    elapsed_weeks = max(0, (today - period_start).days // 7)
-    return max(0, 4 - elapsed_weeks)
-
-
 def groceries_cycle_reserve(
-    budget: MonthlyBudget | None, groceries_spent: Decimal, remaining_weeks: int
-) -> Decimal:
+    today: date,
+    period_start: date,
+    period_end: date,
+    transactions: list[Transaction],
+    budget: MonthlyBudget | None,
+    categories: list[Category],
+) -> GroceryCycleReserve:
     if budget is None or budget.groceries_weekly_limit <= ZERO:
-        return ZERO
-    return money(groceries_spent + money(budget.groceries_weekly_limit) * Decimal(remaining_weeks))
+        return GroceryCycleReserve(ZERO, ZERO, ZERO, 0)
+
+    weekly_limit = money(budget.groceries_weekly_limit)
+    groceries_codes = groceries_category_codes(categories)
+    actual_spent = sum_expenses_for_category_codes(
+        transactions,
+        groceries_codes,
+        period_start,
+        min(today, period_end),
+        categories,
+    )
+    current_week_start, current_week_end = groceries_week_range(today, budget)
+    current_week_spent = sum_expenses_for_category_codes(
+        transactions,
+        groceries_codes,
+        max(period_start, current_week_start),
+        min(period_end, current_week_end),
+        categories,
+    )
+    current_week_overlaps_period = current_week_start <= period_end and current_week_end >= period_start
+    remaining_current_week = (
+        max(ZERO, money(weekly_limit - current_week_spent))
+        if current_week_overlaps_period and today <= period_end
+        else ZERO
+    )
+    future_weeks = future_grocery_weeks_count(current_week_end + timedelta(days=1), period_end, budget)
+    future_reserved = money(remaining_current_week + weekly_limit * Decimal(future_weeks))
+    return GroceryCycleReserve(
+        actual_spent=actual_spent,
+        future_reserved=future_reserved,
+        total_reserved=money(actual_spent + future_reserved),
+        future_weeks=future_weeks,
+    )
+
+
+def future_grocery_weeks_count(first_day: date, period_end: date, budget: MonthlyBudget) -> int:
+    if first_day > period_end:
+        return 0
+    cursor, _ = groceries_week_range(first_day, budget)
+    if cursor < first_day:
+        cursor += timedelta(days=7)
+    count = 0
+    while cursor <= period_end:
+        _, week_end = groceries_week_range(cursor, budget)
+        if week_end > period_end:
+            break
+        count += 1
+        cursor += timedelta(days=7)
+    return count
 
 
 def mandatory_for_period(

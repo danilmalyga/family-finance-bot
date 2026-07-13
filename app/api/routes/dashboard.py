@@ -9,8 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_family_id, session_dep
 from app.config import Settings, get_settings
-from app.domain.enums import TransactionStatus
-from app.repositories.transactions import TransactionRepository
 from app.services.budget_engine import BudgetEngine
 from app.utils.money import money
 
@@ -20,6 +18,7 @@ router = APIRouter(tags=["dashboard"])
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(
     key: str | None = Query(default=None),
+    test: bool = Query(default=False),
     settings: Settings = Depends(get_settings),
     family_id: UUID = Depends(current_family_id),
     session: AsyncSession = Depends(session_dep),
@@ -29,44 +28,49 @@ async def dashboard(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid dashboard key")
 
     snapshot = await BudgetEngine(session).get_snapshot(family_id, date.today())
-    transactions = await TransactionRepository(session).list_for_family(family_id, limit=10)
-    confirmed = [tx for tx in transactions if tx.status == TransactionStatus.CONFIRMED]
-    draft = [tx for tx in transactions if tx.status == TransactionStatus.DRAFT]
-    html = render_dashboard(snapshot=snapshot, confirmed=confirmed, draft=draft)
+    html = render_dashboard(snapshot=snapshot, show_test_panel=test)
     return HTMLResponse(html)
 
 
-def render_dashboard(snapshot: object, confirmed: list[object], draft: list[object]) -> str:
+def render_dashboard(snapshot: object, show_test_panel: bool = False) -> str:
     today = date.today()
     income = snapshot.total_income  # type: ignore[attr-defined]
     mandatory = snapshot.mandatory_remaining  # type: ignore[attr-defined]
-    groceries_reserved = snapshot.groceries_cycle_reserved  # type: ignore[attr-defined]
     discretionary = snapshot.discretionary_spent  # type: ignore[attr-defined]
     savings = snapshot.total_savings  # type: ignore[attr-defined]
     available = snapshot.available_to_spend  # type: ignore[attr-defined]
-    free_initial = money(income - mandatory - groceries_reserved - snapshot.savings_target)  # type: ignore[attr-defined]
-    free_used_pct = percent(discretionary, free_initial)
-    cycle_days = max(1, (snapshot.period_end - snapshot.period_start).days + 1)  # type: ignore[attr-defined]
-    elapsed_days = min(cycle_days, max(0, (today - snapshot.period_start).days + 1))  # type: ignore[attr-defined]
-    cycle_elapsed_pct = percent(Decimal(elapsed_days), Decimal(cycle_days))
-    free_spent_pct = percent(discretionary, max(Decimal("0.01"), free_initial))
-    tempo_text = spending_tempo_text(cycle_elapsed_pct, free_spent_pct)
-    future_groceries = max(Decimal("0"), groceries_reserved - snapshot.groceries_cycle_spent)  # type: ignore[attr-defined]
     future_mandatory = future_payments_total(snapshot.upcoming_payments, today)  # type: ignore[attr-defined]
-    period_used = mandatory + groceries_reserved + discretionary + savings
+    paid_mandatory = max(Decimal("0"), mandatory - future_mandatory)
     category_cards = render_category_cards(snapshot.category_summaries)  # type: ignore[attr-defined]
     mandatory_overview = render_mandatory_overview(snapshot.upcoming_payments, today)  # type: ignore[attr-defined]
-    groceries_overview = render_groceries_overview(snapshot)
-    confirmed_rows = render_transaction_rows(confirmed)
-    draft_rows = render_transaction_rows(draft)
-    expense_donut = render_donut(
-        "Куда ушли деньги",
-        discretionary,
-        max(Decimal("0"), available),
-        "обычные траты",
-        "доступно",
+    groceries_focus = render_groceries_focus(snapshot)
+    available_status = "Бюджет превышен" if available < 0 else "Бюджет в норме"
+    test_panel = (
+        render_test_panel(
+            income=income,
+            mandatory=mandatory,
+            paid_mandatory=paid_mandatory,
+            groceries_weekly_limit=getattr(
+                getattr(snapshot, "groceries_week", None),
+                "weekly_limit",
+                Decimal("0"),
+            ),
+            groceries_spent=snapshot.groceries_cycle_spent,  # type: ignore[attr-defined]
+            groceries_current_week_remaining=getattr(
+                getattr(snapshot, "groceries_week", None),
+                "remaining",
+                Decimal("0"),
+            ),
+            remaining_weeks=Decimal(snapshot.groceries_cycle_remaining_weeks),  # type: ignore[attr-defined]
+            discretionary=discretionary,
+            savings=savings,
+            savings_target=snapshot.savings_target,  # type: ignore[attr-defined]
+            reserve_gap=snapshot.reserve_gap,  # type: ignore[attr-defined]
+            days_until_next_income=Decimal(snapshot.days_until_next_income),  # type: ignore[attr-defined]
+        )
+        if show_test_panel
+        else ""
     )
-
     return f"""<!doctype html>
 <html lang="ru">
 <head>
@@ -127,6 +131,16 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
       grid-template-columns: 1.25fr .75fr;
       gap: 18px;
     }}
+    .overview-grid {{
+      display: grid;
+      grid-template-columns: minmax(280px, .9fr) minmax(0, 1.1fr);
+      gap: 18px;
+      align-items: stretch;
+    }}
+    .overview-side {{
+      display: grid;
+      gap: 18px;
+    }}
     h2 {{ margin: 0 0 12px; font-size: 17px; }}
     h3 {{
       margin: 14px 0 8px;
@@ -144,7 +158,49 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
     }}
     .hero-label {{ color: var(--muted); font-size: 14px; }}
     .hero-value {{ font-size: 44px; line-height: 1; font-weight: 800; color: var(--accent); }}
+    .hero-value.danger {{ color: var(--bad); }}
     .hero-note {{ color: var(--muted); max-width: 720px; }}
+    .status {{
+      display: inline-flex;
+      width: fit-content;
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 12px;
+      font-weight: 700;
+      background: #e8f3ef;
+      color: var(--accent);
+    }}
+    .status.warning {{ background: #fff4df; color: var(--warn); }}
+    .status.danger {{ background: #ffe9e6; color: var(--bad); }}
+    .grocery-card.warning {{ border-color: #e2b55f; }}
+    .grocery-card.danger {{ border-color: #db8b82; }}
+    .grocery-ring-wrap {{
+      display: grid;
+      place-items: center;
+      padding: 8px 0 14px;
+    }}
+    .grocery-ring {{
+      width: 210px;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: conic-gradient(var(--accent) var(--pct), #e6eaf0 0);
+      display: grid;
+      place-items: center;
+    }}
+    .grocery-card.warning .grocery-ring {{ background: conic-gradient(var(--warn) var(--pct), #e6eaf0 0); }}
+    .grocery-card.danger .grocery-ring {{ background: conic-gradient(var(--bad) var(--pct), #e6eaf0 0); }}
+    .grocery-ring-inner {{
+      width: 132px;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: var(--panel);
+      display: grid;
+      place-items: center;
+      text-align: center;
+      padding: 12px;
+    }}
+    .ring-label {{ color: var(--muted); font-size: 13px; }}
+    .ring-value {{ font-size: 24px; font-weight: 800; }}
     .section-title {{
       display: flex;
       justify-content: space-between;
@@ -290,8 +346,50 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
       white-space: nowrap;
       text-align: right;
     }}
+    .test-panel {{
+      border-color: #b8c7d9;
+      background: #f9fbfd;
+    }}
+    .test-switch {{
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      font-weight: 700;
+      cursor: pointer;
+    }}
+    .test-switch input {{
+      width: 18px;
+      height: 18px;
+    }}
+    .test-grid {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }}
+    .field {{
+      display: grid;
+      gap: 5px;
+    }}
+    .field label {{
+      color: var(--muted);
+      font-size: 12px;
+    }}
+    .field input {{
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 9px 10px;
+      font: inherit;
+      background: var(--panel);
+    }}
+    .test-note {{
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }}
     @media (max-width: 900px) {{
-      .kpis, .grid, .two, .donuts, .cards-grid {{ grid-template-columns: 1fr; }}
+      .kpis, .grid, .overview-grid, .two, .donuts, .cards-grid, .test-grid {{ grid-template-columns: 1fr; }}
       .hero-value {{ font-size: 36px; }}
       .donut-card {{ grid-template-columns: 120px minmax(0, 1fr); }}
       .donut {{ width: 120px; }}
@@ -303,114 +401,49 @@ def render_dashboard(snapshot: object, confirmed: list[object], draft: list[obje
 </head>
 <body>
   <header>
-    <h1>Финансовый обзор</h1>
-    <div class="period">Зарплатный цикл: {format_date(snapshot.period_start)} — {format_date(snapshot.period_end)} · До следующего дохода: {snapshot.days_until_next_income} дн.</div>
+    <h1>Семейные финансы</h1>
+    <div class="period">{format_date(snapshot.period_start)} — {format_date(snapshot.period_end)} · До следующей зарплаты: {snapshot.days_until_next_income} дн.</div>
   </header>
   <main>
-    <section class="hero">
-      <div class="hero-label">Доступно к тратам</div>
-      <div class="hero-value">{format_money(available)}</div>
-      <div class="hero-note">После обязательных платежей, продуктового резерва, обычных расходов, накоплений и резерва.</div>
-    </section>
-
-    <section class="kpis">
-      {kpi("Реальный остаток", snapshot.cycle_balance_after_plan)}
-      {kpi("Фактический баланс", snapshot.balance)}
-      {kpi("Расходы периода", snapshot.total_expenses, "warn")}
-      {kpi("Обычные траты", discretionary, "warn")}
-      {kpi("Лимит в день", snapshot.safe_daily_limit, "blue")}
-    </section>
-
-    <section class="grid">
-      <div class="card">
-        <div class="section-title"><h2>Расшифровка доступной суммы</h2><span class="hint">кликабельная детализация будет добавлена позже</span></div>
-        {render_breakdown(income, mandatory, groceries_reserved, discretionary, savings, snapshot.savings_target_remaining, snapshot.reserve_gap, available)}
-      </div>
-
-      <div class="card">
-        <h2>Прогноз на конец цикла</h2>
-        <div class="row"><div class="name muted">Текущий фактический баланс</div><div class="amount">{format_money(snapshot.balance)}</div></div>
-        <div class="row"><div class="name muted">Ещё зарезервировано на продукты</div><div class="amount">{format_money(future_groceries)}</div></div>
-        <div class="row"><div class="name muted">Ещё предстоит обязательных оплат</div><div class="amount">{format_money(future_mandatory)}</div></div>
-        <div class="row"><div class="name muted">Свободно после всех резервов</div><div class="amount">{format_money(available)}</div></div>
+    <section class="overview-grid">
+      {groceries_focus}
+      <div class="overview-side">
+        <div class="hero">
+          <span class="status {'danger' if available < 0 else ''}">{available_status}</span>
+          <div class="hero-label">Доступно к тратам</div>
+          <div class="hero-value {'danger' if available < 0 else ''}" data-test="available-main">{format_money(available)}</div>
+          <div class="hero-note">Свободные деньги после обязательных платежей, продуктового резерва и уже совершённых расходов.</div>
+        </div>
+        <div class="card">
+          <h2>Безопасный лимит</h2>
+          <div class="value {'bad' if snapshot.safe_daily_limit < 0 else 'blue'}" data-test="daily-limit">{format_money(snapshot.safe_daily_limit)} / день</div>
+          <div class="muted" data-test="daily-note">До зарплаты: {snapshot.days_until_next_income} дн.</div>
+          <div class="hero-note">Максимальная средняя сумма свободных расходов в день, чтобы не выйти за бюджет до следующего дохода.</div>
+        </div>
+        <div class="card">
+          <h2>Обязательные платежи</h2>
+          {mandatory_overview}
+        </div>
       </div>
     </section>
 
-    <section class="two">
-      <div class="card">
-        <h2>Безопасный лимит в день</h2>
-        <div class="value blue">{format_money(snapshot.safe_daily_limit)}</div>
-        <div class="muted">{format_money(available)} / {snapshot.days_until_next_income} дн.</div>
-      </div>
-      <div class="card">
-        <h2>Свободный бюджет</h2>
-        <div class="row"><div class="name muted">Изначально свободно</div><div class="amount">{format_money(free_initial)}</div></div>
-        <div class="row"><div class="name muted">Уже потрачено</div><div class="amount">{format_money(discretionary)}</div></div>
-        <div class="row"><div class="name muted">Осталось</div><div class="amount">{format_money(available)}</div></div>
-        {metric("Использовано свободного бюджета", discretionary, free_used_pct, "warn", suffix=f"из {format_money(free_initial)}")}
-      </div>
-    </section>
-
-    <section class="donuts">
-      {expense_donut}
-      {render_donut("Период от зарплаты", period_used, max(Decimal("0"), available), "зарезервировано и потрачено", "доступно")}
-    </section>
-
-    <section class="two">
-      <div class="card">
-        <h2>Продукты</h2>
-        {groceries_overview}
-      </div>
-      <div class="card">
-        <h2>Обязательные платежи цикла</h2>
-        {mandatory_overview}
-      </div>
-    </section>
+    {test_panel}
 
     <section class="card">
       <h2>Расходы по категориям</h2>
       {category_cards}
-    </section>
-
-    <section class="two">
-      <div class="card">
-        <h2>Фактический баланс операций</h2>
-        <div class="breakdown">
-          <div class="breakdown-row"><span>Доходы</span><strong>{format_money(income)}</strong></div>
-          <div class="breakdown-row"><span>Расходы</span><strong>−{format_money(snapshot.total_expenses)}</strong></div>
-          <div class="breakdown-row"><span>Накопления</span><strong>−{format_money(snapshot.total_savings)}</strong></div>
-          <div class="breakdown-row"><span>Долги</span><strong>−{format_money(snapshot.total_debt_payments)}</strong></div>
-          <div class="breakdown-row total"><span>Фактический баланс</span><strong>{format_money(snapshot.balance)}</strong></div>
-        </div>
-      </div>
-      <div class="card">
-        <h2>Темп расходов</h2>
-        <div class="row"><div class="name muted">Прошло зарплатного цикла</div><div class="amount">{cycle_elapsed_pct}%</div></div>
-        <div class="row"><div class="name muted">Потрачено свободного бюджета</div><div class="amount">{free_spent_pct}%</div></div>
-        <div class="row"><div class="name muted">Вывод</div><div class="amount">{tempo_text}</div></div>
-      </div>
-    </section>
-
-    <section class="two">
-      <div class="card">
-        <h2>Последние подтверждённые операции</h2>
-        {confirmed_rows}
-      </div>
-      <div class="card">
-        <h2>Черновики к подтверждению</h2>
-        {draft_rows}
-      </div>
     </section>
   </main>
 </body>
 </html>"""
 
 
-def kpi(label: str, value: Decimal, tone: str = "") -> str:
+def kpi(label: str, value: Decimal, tone: str = "", key: str = "") -> str:
+    attr = f' data-test="{escape(key)}"' if key else ""
     return f"""
       <div class="card">
         <div class="label">{escape(label)}</div>
-        <div class="value {tone}">{format_money(value)}</div>
+        <div class="value {tone}"{attr}>{format_money(value)}</div>
       </div>
     """
 
@@ -436,74 +469,266 @@ def render_breakdown(
     available: Decimal,
 ) -> str:
     rows = [
-        ("Доходы", income, ""),
-        ("Обязательные платежи", mandatory, "−"),
-        ("Продукты до конца цикла", groceries_reserved, "−"),
-        ("Другие расходы", discretionary, "−"),
-        ("Накопления", savings, "−"),
-        ("Остаток цели накоплений", savings_remaining, "−"),
-        ("Недобор резерва", reserve_gap, "−"),
+        ("Доходы", income, "", "breakdown-income"),
+        ("Обязательные платежи", mandatory, "−", "breakdown-mandatory"),
+        ("Продукты до конца цикла", groceries_reserved, "−", "breakdown-groceries"),
+        ("Другие расходы", discretionary, "−", "breakdown-discretionary"),
+        ("Накопления", savings, "−", "breakdown-savings"),
+        ("Остаток цели накоплений", savings_remaining, "−", "breakdown-savings-remaining"),
+        ("Недобор резерва", reserve_gap, "−", "breakdown-reserve-gap"),
     ]
     body = "".join(
-        f'<div class="breakdown-row"><span>{escape(label)}</span><strong>{sign}{format_money(value)}</strong></div>'
-        for label, value, sign in rows
+        f'<div class="breakdown-row"><span>{escape(label)}</span><strong data-test="{key}">{sign}{format_money(value)}</strong></div>'
+        for label, value, sign, key in rows
     )
     return (
         f'<div class="breakdown">{body}'
-        f'<div class="breakdown-row total"><span>Доступно к тратам</span><strong>{format_money(available)}</strong></div>'
+        f'<div class="breakdown-row total"><span>Доступно к тратам</span><strong data-test="breakdown-available">{format_money(available)}</strong></div>'
         "</div>"
     )
 
 
-def render_groceries_overview(snapshot: object) -> str:
+def render_test_panel(
+    income: Decimal,
+    mandatory: Decimal,
+    paid_mandatory: Decimal,
+    groceries_weekly_limit: Decimal,
+    groceries_spent: Decimal,
+    groceries_current_week_remaining: Decimal,
+    remaining_weeks: Decimal,
+    discretionary: Decimal,
+    savings: Decimal,
+    savings_target: Decimal,
+    reserve_gap: Decimal,
+    days_until_next_income: Decimal,
+) -> str:
+    return f"""
+    <section class="card test-panel">
+      <label class="test-switch">
+        <input type="checkbox" id="testMode">
+        Тестовая модель
+      </label>
+      <div class="test-note">
+        При включении страница считает цифры из полей ниже. База данных и Telegram-настройки не меняются.
+      </div>
+      <div class="test-grid">
+        {test_input("testIncome", "Зарплата", income)}
+        {test_input("testMandatory", "Обязательные платежи всего", mandatory)}
+        {test_input("testMandatoryPaid", "Уже оплачено обязательных", paid_mandatory)}
+        {test_input("testGroceriesWeekly", "Бюджет продуктов на неделю", groceries_weekly_limit)}
+        {test_input("testGroceriesSpent", "Продукты уже потрачено", groceries_spent)}
+        {test_input("testGroceriesCurrentRemaining", "Остаток продуктов текущей недели", groceries_current_week_remaining)}
+        {test_input("testRemainingWeeks", "Будущие полные продуктовые недели", remaining_weeks)}
+        {test_input("testOther", "Обычные расходы", discretionary)}
+        {test_input("testSavings", "Накопления уже внесены", savings)}
+        {test_input("testSavingsTarget", "Цель накоплений", savings_target)}
+        {test_input("testReserveGap", "Недобор резерва", reserve_gap)}
+        {test_input("testDays", "Дней до зарплаты", days_until_next_income)}
+      </div>
+    </section>
+    <script>
+      (() => {{
+        const moneyKeys = [
+          "available-main", "cycle-balance", "balance", "total-expenses", "discretionary",
+          "daily-limit", "breakdown-income", "breakdown-mandatory", "breakdown-groceries",
+          "breakdown-discretionary", "breakdown-savings", "breakdown-savings-remaining",
+          "breakdown-reserve-gap", "breakdown-available", "forecast-balance",
+          "forecast-future-groceries", "forecast-future-mandatory", "forecast-available",
+          "free-initial", "free-spent", "free-available", "groceries-spent",
+          "groceries-weekly", "groceries-remaining", "groceries-cycle-spent",
+          "groceries-future-plan", "groceries-cycle-forecast", "actual-income",
+          "actual-expenses", "actual-savings", "actual-balance"
+        ];
+        const original = new Map();
+        for (const key of moneyKeys) {{
+          original.set(key, [...document.querySelectorAll(`[data-test="${{key}}"]`)].map((node) => node.textContent));
+        }}
+        original.set("daily-note", [...document.querySelectorAll('[data-test="daily-note"]')].map((node) => node.textContent));
+
+        const field = (id) => {{
+          const raw = document.getElementById(id)?.value || "0";
+          const value = Number(String(raw).replace(",", "."));
+          return Number.isFinite(value) ? value : 0;
+        }};
+        const euro = (value, signed = false) => {{
+          const prefix = signed && value > 0 ? "−" : "";
+          return prefix + new Intl.NumberFormat("ru-RU", {{
+            style: "currency",
+            currency: "EUR",
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          }}).format(Math.abs(value)).replace(/\\s€/, " €");
+        }};
+        const setText = (key, text) => {{
+          document.querySelectorAll(`[data-test="${{key}}"]`).forEach((node) => {{
+            node.textContent = text;
+          }});
+        }};
+        const setMoney = (key, value, signed = false) => setText(key, euro(value, signed));
+        const setDailyLimit = (value) => setText("daily-limit", `${{euro(value)}} / день`);
+        const setDonut = (key, used, remaining) => {{
+          const total = Math.max(0, used) + Math.max(0, remaining);
+          const pct = total > 0 ? Math.round((Math.max(0, used) / total) * 100) : 0;
+          document.querySelectorAll(`[data-donut="${{key}}"]`).forEach((node) => {{
+            node.style.setProperty("--pct", `${{pct}}%`);
+          }});
+          setMoney(`${{key}}-used`, used);
+          setMoney(`${{key}}-remaining`, remaining);
+        }};
+        const restore = () => {{
+          for (const [key, values] of original.entries()) {{
+            document.querySelectorAll(`[data-test="${{key}}"]`).forEach((node, index) => {{
+              node.textContent = values[index] || "";
+            }});
+          }}
+        }};
+        const recalc = () => {{
+          if (!document.getElementById("testMode")?.checked) {{
+            restore();
+            return;
+          }}
+          const income = field("testIncome");
+          const mandatory = field("testMandatory");
+          const paidMandatory = field("testMandatoryPaid");
+          const groceriesWeekly = field("testGroceriesWeekly");
+          const groceriesSpent = field("testGroceriesSpent");
+          const groceriesCurrentRemaining = Math.max(0, field("testGroceriesCurrentRemaining"));
+          const remainingWeeks = Math.max(0, field("testRemainingWeeks"));
+          const other = field("testOther");
+          const savings = field("testSavings");
+          const savingsTarget = field("testSavingsTarget");
+          const reserveGap = field("testReserveGap");
+          const days = Math.max(1, Math.round(field("testDays")));
+
+          const groceriesReserve = groceriesSpent + groceriesCurrentRemaining + groceriesWeekly * remainingWeeks;
+          const futureGroceries = Math.max(0, groceriesReserve - groceriesSpent);
+          const futureMandatory = Math.max(0, mandatory - paidMandatory);
+          const savingsRemaining = Math.max(0, savingsTarget - savings);
+          const available = income - mandatory - groceriesReserve - other - savings - savingsRemaining - reserveGap;
+          const freeInitial = income - mandatory - groceriesReserve - savingsTarget;
+          const actualExpenses = paidMandatory + groceriesSpent + other;
+          const balance = income - actualExpenses - savings;
+          const cycleBalance = income - mandatory - groceriesReserve;
+          const daily = available / days;
+          const groceriesWeekRemaining = groceriesCurrentRemaining;
+          const periodUsed = mandatory + groceriesReserve + other + savings;
+
+          setMoney("available-main", available);
+          setMoney("cycle-balance", cycleBalance);
+          setMoney("balance", balance);
+          setMoney("total-expenses", actualExpenses);
+          setMoney("discretionary", other);
+          setDailyLimit(daily);
+          setMoney("breakdown-income", income);
+          setMoney("breakdown-mandatory", mandatory, true);
+          setMoney("breakdown-groceries", groceriesReserve, true);
+          setMoney("breakdown-discretionary", other, true);
+          setMoney("breakdown-savings", savings, true);
+          setMoney("breakdown-savings-remaining", savingsRemaining, true);
+          setMoney("breakdown-reserve-gap", reserveGap, true);
+          setMoney("breakdown-available", available);
+          setMoney("forecast-balance", balance);
+          setMoney("forecast-future-groceries", futureGroceries);
+          setMoney("forecast-future-mandatory", futureMandatory);
+          setMoney("forecast-available", available);
+          setMoney("free-initial", freeInitial);
+          setMoney("free-spent", other);
+          setMoney("free-available", available);
+          setText("daily-note", `До зарплаты: ${{days}} дн.`);
+          setMoney("groceries-spent", groceriesSpent);
+          setMoney("groceries-weekly", groceriesWeekly);
+          setMoney("groceries-remaining", groceriesWeekRemaining);
+          setMoney("grocery-center-remaining", groceriesWeekRemaining);
+          setMoney("groceries-cycle-spent", groceriesSpent);
+          setMoney("groceries-future-plan", futureGroceries);
+          setMoney("groceries-cycle-forecast", groceriesReserve);
+          setText("grocery-used-pct", `${{Math.min(100, Math.max(0, Math.round((groceriesSpent / Math.max(0.01, groceriesWeekly)) * 100)))}}%`);
+          setMoney("actual-income", income);
+          setMoney("actual-expenses", actualExpenses, true);
+          setMoney("actual-savings", savings, true);
+          setMoney("actual-balance", balance);
+          setDonut("expense", other, Math.max(0, available));
+          setDonut("period", periodUsed, Math.max(0, available));
+          setDonut("grocery", groceriesSpent, groceriesWeekRemaining);
+        }};
+
+        document.getElementById("testMode")?.addEventListener("change", recalc);
+        document.querySelectorAll(".test-panel input").forEach((input) => {{
+          input.addEventListener("input", recalc);
+          input.addEventListener("change", recalc);
+        }});
+      }})();
+    </script>
+    """
+
+
+def test_input(field_id: str, label: str, value: Decimal) -> str:
+    return f"""
+      <div class="field">
+        <label for="{escape(field_id)}">{escape(label)}</label>
+        <input id="{escape(field_id)}" type="number" step="0.01" value="{decimal_for_input(value)}">
+      </div>
+    """
+
+
+def render_groceries_focus(snapshot: object) -> str:
     groceries_week = snapshot.groceries_week  # type: ignore[attr-defined]
     if groceries_week is None:
-        return '<div class="muted">Бюджет продуктов на неделю не настроен.</div>'
-    future_plan = max(Decimal("0"), snapshot.groceries_cycle_reserved - snapshot.groceries_cycle_spent)  # type: ignore[attr-defined]
-    cycle_forecast = snapshot.groceries_cycle_reserved  # type: ignore[attr-defined]
+        return """
+          <section class="card grocery-card">
+            <h2>Продукты на неделю</h2>
+            <div class="muted">Недельный бюджет продуктов не настроен.</div>
+          </section>
+        """
+    weekly_limit = groceries_week.weekly_limit  # type: ignore[attr-defined]
+    spent = groceries_week.spent  # type: ignore[attr-defined]
+    remaining = groceries_week.remaining  # type: ignore[attr-defined]
+    overspent = max(Decimal("0"), money(spent - weekly_limit))
+    pct = percent(spent, weekly_limit)
+    if overspent > 0:
+        tone = "danger"
+        status = "Продуктовый бюджет превышен"
+    elif pct >= 80:
+        tone = "warning"
+        status = "Близко к недельному лимиту"
+    else:
+        tone = ""
+        status = "Бюджет в норме"
+    overspent_row = (
+        f'<div class="row"><div class="name muted">Перерасход</div><div class="amount bad">{format_money(overspent)}</div></div>'
+        if overspent > 0
+        else ""
+    )
     return f"""
-      <div class="row"><div class="name muted">Текущая неделя</div><div class="amount">{format_date(groceries_week.week_start)} — {format_date(groceries_week.week_end)}</div></div>
-      <div class="row"><div class="name muted">Потрачено за неделю</div><div class="amount">{format_money(groceries_week.spent)}</div></div>
-      <div class="row"><div class="name muted">Недельный лимит</div><div class="amount">{format_money(groceries_week.weekly_limit)}</div></div>
-      <div class="row"><div class="name muted">Осталось на неделю</div><div class="amount">{format_money(groceries_week.remaining)}</div></div>
-      <div class="row"><div class="name muted">Фактически потрачено в цикле</div><div class="amount">{format_money(snapshot.groceries_cycle_spent)}</div></div>
-      <div class="row"><div class="name muted">Запланировано на оставшиеся недели</div><div class="amount">{format_money(future_plan)}</div></div>
-      <div class="row"><div class="name muted">Прогноз за цикл</div><div class="amount">{format_money(cycle_forecast)}</div></div>
+      <section class="card grocery-card {tone}">
+        <div class="section-title"><h2>Продукты на неделю</h2><span class="status {tone}">{status}</span></div>
+        <div class="grocery-ring-wrap">
+          <div class="grocery-ring" style="--pct:{pct}%" data-donut="grocery">
+            <div class="grocery-ring-inner">
+              <div>
+                <div class="ring-label">Осталось</div>
+                <div class="ring-value" data-test="grocery-center-remaining">{format_money(remaining)}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="row"><div class="name muted">Потрачено</div><div class="amount"><span data-test="groceries-spent">{format_money(spent)}</span> из <span data-test="groceries-weekly">{format_money(weekly_limit)}</span></div></div>
+        <div class="row"><div class="name muted">Использовано</div><div class="amount" data-test="grocery-used-pct">{pct}%</div></div>
+        <div class="row"><div class="name muted">Неделя</div><div class="amount">{format_date_short(groceries_week.week_start)} — {format_date_short(groceries_week.week_end)}</div></div>
+        {overspent_row}
+      </section>
     """
 
 
 def render_mandatory_overview(payments: list[object], today: date) -> str:
     if not payments:
         return '<div class="muted">Обязательные платежи не настроены.</div>'
-    paid = [payment for payment in payments if payment.payment_date and payment.payment_date < today]  # type: ignore[attr-defined]
-    upcoming = [payment for payment in payments if not payment.payment_date or payment.payment_date >= today]  # type: ignore[attr-defined]
-    total = money(sum((payment.amount for payment in payments), Decimal("0")))  # type: ignore[attr-defined]
-    paid_total = money(sum((payment.amount for payment in paid), Decimal("0")))  # type: ignore[attr-defined]
-    upcoming_total = money(sum((payment.amount for payment in upcoming), Decimal("0")))  # type: ignore[attr-defined]
-    return f"""
-      <h3>Уже оплачено по дате</h3>
-      {render_payment_group(paid)}
-      <h3>Ещё предстоит оплатить</h3>
-      {render_payment_group(upcoming)}
-      <div class="row"><div class="name muted">Всего обязательных платежей</div><div class="amount">{format_money(total)}</div></div>
-      <div class="row"><div class="name muted">Уже оплачено</div><div class="amount">{format_money(paid_total)}</div></div>
-      <div class="row"><div class="name muted">Осталось оплатить</div><div class="amount">{format_money(upcoming_total)}</div></div>
-    """
-
-
-def render_payment_group(payments: list[object]) -> str:
-    if not payments:
-        return '<div class="muted">Нет платежей.</div>'
     rows = []
     for payment in payments:
-        date_text = format_date(payment.payment_date) if payment.payment_date else "дата не задана"  # type: ignore[attr-defined]
         rows.append(
             f"""
             <div class="payment-line">
-              <div>
-                <div class="payment-title">{escape(clean_payment_name(payment.name))}</div>
-                <div class="payment-date">{date_text}</div>
-              </div>
+              <div class="payment-title">{escape(clean_payment_name(payment.name))}</div>
               <div class="payment-amount">{format_money(payment.amount)}</div>
             </div>
             """  # type: ignore[attr-defined]
@@ -516,12 +741,14 @@ def render_category_cards(categories: list[object]) -> str:
     visible.sort(key=lambda category: category.spent, reverse=True)  # type: ignore[attr-defined]
     if not visible:
         return '<div class="muted">Пока нет подтверждённых расходов по категориям.</div>'
+    total_spent = money(sum((category.spent for category in visible), Decimal("0")))  # type: ignore[attr-defined]
     cards = []
     for category in visible[:12]:
         spent = category.spent  # type: ignore[attr-defined]
         limit = category.monthly_limit  # type: ignore[attr-defined]
         remaining = max(Decimal("0"), money(limit - spent)) if limit else None
         pct = percent(spent, limit) if limit else 0
+        share_pct = percent(spent, total_spent)
         limit_text = format_money(limit) if limit else "не установлен"
         remaining_text = format_money(remaining) if remaining is not None else "—"
         cards.append(
@@ -529,9 +756,10 @@ def render_category_cards(categories: list[object]) -> str:
             <div class="mini-card">
               <div class="mini-title">{escape(category.name)}</div>
               <div class="mini-line"><span>Потрачено</span><strong>{format_money(spent)}</strong></div>
+              <div class="mini-line"><span>Доля расходов</span><strong>{share_pct}%</strong></div>
               <div class="mini-line"><span>Лимит</span><strong>{limit_text}</strong></div>
               <div class="mini-line"><span>Осталось</span><strong>{remaining_text}</strong></div>
-              <div class="bar"><div class="fill {'warn' if pct >= 90 else ''}" style="width:{pct}%"></div></div>
+              <div class="bar"><div class="fill {'warn' if pct >= 90 else ''}" style="width:{pct or share_pct}%"></div></div>
             </div>
             """
         )
@@ -565,24 +793,28 @@ def render_donut(
     remaining: Decimal,
     used_label: str,
     remaining_label: str,
+    key: str = "",
 ) -> str:
     total = money(used + remaining)
     pct = percent(used, total)
+    donut_attr = f' data-donut="{escape(key)}"' if key else ""
+    used_attr = f' data-test="{escape(key)}-used"' if key else ""
+    remaining_attr = f' data-test="{escape(key)}-remaining"' if key else ""
     return f"""
       <div class="card donut-card">
-        <div class="donut" style="--pct:{pct}%"></div>
+        <div class="donut" style="--pct:{pct}%"{donut_attr}></div>
         <div>
           <h2>{escape(title)}</h2>
           <div class="legend">
             <div class="legend-row">
               <span class="swatch"></span>
               <span>{escape(used_label)}</span>
-              <strong>{format_money(used)}</strong>
+              <strong{used_attr}>{format_money(used)}</strong>
             </div>
             <div class="legend-row">
               <span class="swatch rest"></span>
               <span>{escape(remaining_label)}</span>
-              <strong>{format_money(remaining)}</strong>
+              <strong{remaining_attr}>{format_money(remaining)}</strong>
             </div>
           </div>
         </div>
@@ -604,13 +836,39 @@ def render_transaction_rows(transactions: list[object]) -> str:
 
 def clean_payment_name(name: str) -> str:
     parts = name.split()
-    if len(parts) < 4:
-        return name
-    amount_part = parts[-3].replace(",", ".")
-    day_part = parts[-2]
-    if is_decimal_text(amount_part) and day_part.isdigit():
-        return " ".join(parts[:-3]) or name
-    return name
+    while parts and is_payment_metadata_token(parts[-1]):
+        parts.pop()
+    return " ".join(parts).strip() or name
+
+
+def is_payment_metadata_token(value: str) -> bool:
+    normalized = value.strip().lower().replace(",", ".")
+    category_codes = {
+        "housing",
+        "utilities",
+        "groceries",
+        "restaurants",
+        "transport",
+        "child",
+        "health",
+        "clothing",
+        "household",
+        "entertainment",
+        "subscriptions",
+        "gifts",
+        "debt",
+        "savings",
+        "personal_husband",
+        "personal_wife",
+        "other",
+    }
+    if normalized in category_codes or normalized in {"€", "eur", "euro", "евро"}:
+        return True
+    if is_decimal_text(normalized):
+        return True
+    if is_date_text(normalized):
+        return True
+    return False
 
 
 def is_decimal_text(value: str) -> bool:
@@ -619,6 +877,11 @@ def is_decimal_text(value: str) -> bool:
     except Exception:
         return False
     return True
+
+
+def is_date_text(value: str) -> bool:
+    chunks = value.replace("-", ".").split(".")
+    return len(chunks) == 3 and all(chunk.isdigit() for chunk in chunks)
 
 
 def percent(value: Decimal, total: Decimal | None) -> int:
@@ -631,5 +894,13 @@ def format_money(value: Decimal) -> str:
     return f"{money(value):,.2f} €".replace(",", " ").replace(".", ",")
 
 
+def decimal_for_input(value: Decimal) -> str:
+    return str(money(value))
+
+
 def format_date(value: date) -> str:
     return value.strftime("%d.%m.%Y")
+
+
+def format_date_short(value: date) -> str:
+    return value.strftime("%d.%m")

@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+from collections.abc import Sequence
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,22 +10,21 @@ from app.db.models.receipt import Receipt
 from app.db.models.transaction import Transaction, TransactionItem
 from app.db.session import SessionLocal, close_db
 
-
-OPERATIONAL_MODELS = [
+OPERATIONAL_MODELS: Sequence[type[object]] = [
     TransactionItem,
     Transaction,
     Receipt,
     WishlistItem,
 ]
 
-SETTINGS_MODELS = [
+SETTINGS_MODELS: Sequence[type[object]] = [
     FinancialGoal,
     RecurringPayment,
     MonthlyBudget,
 ]
 
 
-async def count_rows(session: AsyncSession, models: list[type[object]]) -> dict[str, int]:
+async def count_rows(session: AsyncSession, models: Sequence[type[object]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for model in models:
         table_name = model.__tablename__  # type: ignore[attr-defined]
@@ -33,13 +33,13 @@ async def count_rows(session: AsyncSession, models: list[type[object]]) -> dict[
     return counts
 
 
-async def delete_rows(session: AsyncSession, models: list[type[object]]) -> None:
+async def delete_rows(session: AsyncSession, models: Sequence[type[object]]) -> None:
     for model in models:
         await session.execute(delete(model))
 
 
 async def reset_data(include_settings: bool, dry_run: bool) -> dict[str, int]:
-    models = OPERATIONAL_MODELS + (SETTINGS_MODELS if include_settings else [])
+    models = tuple(OPERATIONAL_MODELS) + (tuple(SETTINGS_MODELS) if include_settings else ())
     async with SessionLocal() as session:
         counts = await count_rows(session, models)
         if dry_run:

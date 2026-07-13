@@ -173,7 +173,7 @@ def test_available_reserves_four_grocery_weeks_after_salary() -> None:
     )
 
     assert snapshot.groceries_cycle_spent == Decimal("0.00")
-    assert snapshot.groceries_cycle_remaining_weeks == 4
+    assert snapshot.groceries_cycle_remaining_weeks == 3
     assert snapshot.groceries_cycle_reserved == Decimal("800.00")
     assert snapshot.cycle_balance_after_plan == Decimal("2200.00")
     assert snapshot.available_to_spend == Decimal("2200.00")
@@ -208,11 +208,55 @@ def test_available_reserves_spent_groceries_plus_remaining_weeks_mid_cycle() -> 
     )
 
     assert snapshot.groceries_cycle_spent == Decimal("350.00")
-    assert snapshot.groceries_cycle_remaining_weeks == 2
+    assert snapshot.groceries_cycle_remaining_weeks == 1
     assert snapshot.groceries_cycle_reserved == Decimal("750.00")
     assert snapshot.cycle_balance_after_plan == Decimal("2250.00")
     assert snapshot.discretionary_spent == Decimal("100.00")
     assert snapshot.available_to_spend == Decimal("2150.00")
+
+
+def test_grocery_week_overspend_does_not_add_remaining_current_week() -> None:
+    item = budget_with_groceries()
+    item.savings_target = Decimal("0.00")
+    item.minimum_reserve = Decimal("0.00")
+    groceries = category("groceries")
+    snapshot = BudgetEngine().build_snapshot(
+        date(2026, 7, 24),
+        [
+            tx(TransactionType.INCOME, "4000", transaction_date=date(2026, 7, 10)),
+            tx(
+                TransactionType.EXPENSE,
+                "260",
+                category_id=groceries.id,
+                transaction_date=date(2026, 7, 22),
+            ),
+        ],
+        item,
+        [],
+        [groceries],
+    )
+
+    assert snapshot.groceries_week is not None
+    assert snapshot.groceries_week.remaining == Decimal("0.00")
+    assert snapshot.groceries_cycle_spent == Decimal("260.00")
+    assert snapshot.groceries_cycle_reserved == Decimal("460.00")
+
+
+def test_negative_available_keeps_negative_daily_limit() -> None:
+    item = budget()
+    item.salary_day = 10
+    item.savings_target = Decimal("0.00")
+    item.minimum_reserve = Decimal("0.00")
+    snapshot = BudgetEngine().build_snapshot(
+        date(2026, 7, 13),
+        [tx(TransactionType.INCOME, "1000", transaction_date=date(2026, 7, 10))],
+        item,
+        [payment("1200", payment_day=20)],
+        [],
+    )
+
+    assert snapshot.available_to_spend == Decimal("-200.00")
+    assert snapshot.safe_daily_limit < Decimal("0.00")
 
 
 def test_purchase_approve() -> None:

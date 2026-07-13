@@ -9,6 +9,7 @@ from aiogram.types import (
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
+            [KeyboardButton(text="✅ Зарплата пришла")],
             [KeyboardButton(text="📷 Отправить чек"), KeyboardButton(text="➕ Добавить расход")],
             [KeyboardButton(text="💰 Добавить доход"), KeyboardButton(text="🛒 Можно ли купить?")],
             [KeyboardButton(text="📊 Отчёт"), KeyboardButton(text="📈 Инфографика")],
@@ -63,7 +64,7 @@ def category_keyboard(item_id: str, categories: list[tuple[str, str]]) -> Inline
 def settings_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Бюджет месяца", callback_data="settings:budget")],
+            [InlineKeyboardButton(text="План зарплатного цикла", callback_data="settings:budget")],
             [InlineKeyboardButton(text="Продукты на неделю", callback_data="settings:groceries")],
             [InlineKeyboardButton(text="Обязательный платёж", callback_data="settings:payment")],
         ]

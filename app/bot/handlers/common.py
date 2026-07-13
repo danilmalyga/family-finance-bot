@@ -23,15 +23,15 @@ from app.config import get_settings
 from app.db.models.family import User
 from app.db.models.transaction import Transaction, TransactionItem
 from app.db.session import SessionLocal
-from app.domain.enums import TransactionStatus, WishlistStatus
+from app.domain.enums import TransactionSource, TransactionStatus, TransactionType, WishlistStatus
 from app.integrations.openai_client import OpenAIClient, OpenAIUnavailableError
 from app.repositories.budget import BudgetRepository
 from app.repositories.family import FamilyRepository
 from app.repositories.transactions import TransactionRepository
 from app.schemas.finance import PurchaseRequest
-from app.schemas.transactions import TransactionUpdate
+from app.schemas.transactions import TransactionCreate, TransactionUpdate
 from app.services.auth import AccessDeniedError, AuthService
-from app.services.budget_engine import BudgetEngine
+from app.services.budget_engine import BudgetEngine, budget_cycle_range
 from app.services.receipt_service import DuplicateReceiptError, ReceiptService
 from app.services.transaction_service import TransactionService
 from app.utils.money import fmt_money, money
@@ -175,6 +175,57 @@ async def ask_income(message: Message, state: FSMContext) -> None:
     await message.answer("Введите доход, например: +3400 зарплата")
 
 
+@router.message(F.text == "✅ Зарплата пришла")
+async def salary_received(message: Message) -> None:
+    user = await get_user(message)
+    if user is None:
+        return
+    today = date.today()
+    async with SessionLocal() as session:
+        budget_repo = BudgetRepository(session)
+        budget = await budget_repo.get_month_budget(user.family_id, today.year, today.month)
+        if budget is None:
+            budget = await budget_repo.get_latest_budget(user.family_id)
+        if budget is None or budget.planned_income <= 0:
+            await message.answer(
+                "Сначала настройте план зарплатного цикла: ⚙️ Настройки → План зарплатного цикла."
+            )
+            return
+        period_start, period_end = budget_cycle_range(today, budget)
+        existing = await TransactionRepository(session).confirmed_between(
+            user.family_id,
+            period_start,
+            period_end,
+        )
+        salary_exists = any(
+            tx.type == TransactionType.INCOME and tx.description == "Зарплата"
+            for tx in existing
+        )
+        if salary_exists:
+            await message.answer(
+                f"Зарплата за период {period_start:%d.%m} — {period_end:%d.%m} уже внесена."
+            )
+            return
+        tx = await TransactionRepository(session).create(
+            TransactionCreate(
+                family_id=user.family_id,
+                user_id=user.id,
+                type=TransactionType.INCOME,
+                amount=money(budget.planned_income),
+                currency=get_settings().default_currency,
+                description="Зарплата",
+                transaction_date=today,
+                source=TransactionSource.MANUAL,
+                status=TransactionStatus.CONFIRMED,
+            )
+        )
+        await session.commit()
+    await message.answer(
+        f"Зарплата внесена: {fmt_money(tx.amount)}\n"
+        f"Период: {period_start:%d.%m.%Y} — {period_end:%d.%m.%Y}"
+    )
+
+
 @router.message(F.text == "🛒 Можно ли купить?")
 async def ask_purchase(message: Message, state: FSMContext) -> None:
     await state.set_state(PurchaseCheck.waiting_text)
@@ -201,7 +252,7 @@ async def budget_settings_text(message: Message, state: FSMContext) -> None:
     parts = message.text.replace(",", ".").split()
     if len(parts) < 4:
         await message.answer(
-            "Формат: доход накопления резерв день_зарплаты\n"
+            "Формат плана: доход накопления резерв день_зарплаты\n"
             "Например: 3400 300 1500 10\n\n"
             "Можно добавить продукты: 3400 300 1500 10 200 вторник"
         )
@@ -239,7 +290,7 @@ async def budget_settings_text(message: Message, state: FSMContext) -> None:
         await session.commit()
     await state.clear()
     await message.answer(
-        "Бюджет сохранён.\n"
+        "План зарплатного цикла сохранён.\n"
         f"Плановый доход: {fmt_money(planned_income)}\n"
         f"Накопления: {fmt_money(savings_target)}\n"
         f"Минимальный резерв: {fmt_money(minimum_reserve)}\n"
@@ -439,7 +490,13 @@ async def process_receipt_file(
 @router.message(F.text)
 async def free_text(message: Message) -> None:
     text = message.text or ""
-    if text in {"📷 Отправить чек", "❤️ Список желаний", "⚙️ Настройки", "📈 Инфографика"}:
+    if text in {
+        "📷 Отправить чек",
+        "❤️ Список желаний",
+        "⚙️ Настройки",
+        "📈 Инфографика",
+        "✅ Зарплата пришла",
+    }:
         await menu_action(message)
         return
     await handle_text_transaction(message)
@@ -568,6 +625,8 @@ async def menu_action(message: Message) -> None:
         await show_wishlist(message)
     elif message.text == "📈 Инфографика":
         await send_dashboard_link(message)
+    elif message.text == "✅ Зарплата пришла":
+        await salary_received(message)
     else:
         await message.answer("Что настроить?", reply_markup=settings_keyboard())
 
@@ -576,7 +635,7 @@ async def menu_action(message: Message) -> None:
 async def settings_budget_callback(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(SettingsFlow.waiting_budget)
     await callback.message.answer(  # type: ignore[union-attr]
-        "Введите бюджет:\n"
+        "Введите план зарплатного цикла:\n"
         "доход накопления резерв день_зарплаты\n"
         "Например: 3400 300 1500 10\n\n"
         "Можно сразу добавить недельный лимит продуктов:\n"

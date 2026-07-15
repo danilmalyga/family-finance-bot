@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.budget import MonthlyBudget, RecurringPayment
 from app.db.models.family import Category
 from app.db.models.transaction import Transaction
+from app.domain.categories import GROCERY_CATEGORY_CODES
 from app.domain.enums import PurchaseDecision, TransactionStatus, TransactionType
 from app.repositories.budget import BudgetRepository
 from app.repositories.family import FamilyRepository
@@ -525,7 +526,8 @@ def groceries_week_summary(
 
 def groceries_category_codes(categories: list[Category]) -> set[str]:
     groceries = next((category for category in categories if category.code == "groceries"), None)
-    codes = {"groceries"}
+    existing_codes = {category.code for category in categories}
+    codes = {"groceries"} | (GROCERY_CATEGORY_CODES & existing_codes)
     if groceries is None:
         return codes
     codes.update(category.code for category in categories if category.parent_id == groceries.id)

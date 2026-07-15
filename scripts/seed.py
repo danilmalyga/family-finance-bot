@@ -3,9 +3,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.config import get_settings
-from app.db.models.family import Category
 from app.db.session import SessionLocal
-from app.domain.categories import DEFAULT_CATEGORIES
 from app.repositories.budget import BudgetRepository
 from app.repositories.family import FamilyRepository
 
@@ -19,10 +17,7 @@ async def main() -> None:
             family = await family_repo.create_family(
                 "Family", settings.default_currency, settings.default_timezone
             )
-        existing = {category.code: category for category in await family_repo.list_categories(family.id)}
-        for code, name, _parent_code in DEFAULT_CATEGORIES:
-            if code not in existing:
-                session.add(Category(family_id=family.id, code=code, name=name))
+        await family_repo.ensure_default_categories(family.id)
         today = date.today()
         budget_repo = BudgetRepository(session)
         await budget_repo.upsert_month_budget(

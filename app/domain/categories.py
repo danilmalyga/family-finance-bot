@@ -26,3 +26,32 @@ DEFAULT_CATEGORIES: list[tuple[str, str, str | None]] = [
     ("personal_wife", "Личные расходы жены", None),
     ("other", "Другое", None),
 ]
+
+GROCERY_CATEGORY_CODES = {
+    "groceries",
+    "fruit",
+    "vegetables",
+    "meat_fish",
+    "dairy",
+    "bakery",
+    "dessert",
+    "sweets",
+}
+
+CATEGORY_CODE_ALIASES = {
+    "desserts": "dessert",
+    "sweet": "sweets",
+    "candy": "sweets",
+    "candies": "sweets",
+    "fruits": "fruit",
+    "vegetable": "vegetables",
+    "meat": "meat_fish",
+    "fish": "meat_fish",
+    "milk": "dairy",
+    "bread": "bakery",
+}
+
+
+def normalize_category_code(code: str | None) -> str:
+    normalized = (code or "other").strip().lower()
+    return CATEGORY_CODE_ALIASES.get(normalized, normalized)

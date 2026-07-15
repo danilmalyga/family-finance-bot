@@ -2,12 +2,13 @@ import asyncio
 import logging
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from urllib.parse import urlparse
 from uuid import UUID
 
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import select
 
 from app.bot.keyboards.main import (
@@ -92,11 +93,29 @@ async def send_dashboard_link(message: Message) -> None:
     key = settings.api_secret_key.get_secret_value() if settings.api_secret_key else ""
     suffix = f"?key={key}" if key else ""
     base_url = settings.public_base_url or f"http://localhost:{settings.app_port}"
+    url = f"{base_url.rstrip('/')}/dashboard{suffix}"
+    if not is_public_http_url(url):
+        await message.answer(
+            "Инфографика настроена на локальный адрес, Telegram не может открыть его кнопкой.\n\n"
+            f"Локальный адрес: {url}\n\n"
+            "Для кликабельной кнопки укажите PUBLIC_BASE_URL с публичным адресом Render."
+        )
+        return
     await message.answer(
-        "Инфографика доступна в браузере:\n"
-        f"{base_url.rstrip('/')}/dashboard{suffix}\n\n"
-        "Когда перенесёшь проект на сервер, localhost заменится на домен сервера."
+        "Инфографика доступна по кнопке ниже.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Открыть инфографику", url=url)],
+            ]
+        ),
     )
+
+
+def is_public_http_url(url: str) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    return parsed.hostname not in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
 
 @router.message(Command("wishlist"))
@@ -190,6 +209,10 @@ async def salary_received(message: Message) -> None:
     user = await get_user(message)
     if user is None:
         return
+    await create_salary_transaction(message, user)
+
+
+async def create_salary_transaction(message: Message, user: User) -> None:
     today = date.today()
     async with SessionLocal() as session:
         budget_repo = BudgetRepository(session)
@@ -501,7 +524,7 @@ async def process_receipt_file(
         )
     except DuplicateReceiptError:
         await message.answer("Этот чек уже был обработан ранее.")
-    except (OpenAIUnavailableError, TimeoutError, asyncio.TimeoutError):
+    except (OpenAIUnavailableError, TimeoutError):
         await message.answer(
             "Не удалось автоматически обработать данные. Попробуйте ещё раз или добавьте операцию вручную."
         )
@@ -516,6 +539,7 @@ async def process_receipt_file(
 async def free_text(message: Message) -> None:
     text = message.text or ""
     if text in {
+        "⬅️ Главное меню",
         "📷 Отправить чек",
         "❤️ Список желаний",
         "⚙️ Настройки",
@@ -644,7 +668,9 @@ async def add_wish(callback: CallbackQuery) -> None:
 
 
 async def menu_action(message: Message) -> None:
-    if message.text == "📷 Отправить чек":
+    if message.text == "⬅️ Главное меню":
+        await message.answer("Главное меню.", reply_markup=main_menu())
+    elif message.text == "📷 Отправить чек":
         await message.answer("Отправьте фотографию чека следующим сообщением.")
     elif message.text == "❤️ Список желаний":
         await show_wishlist(message)
@@ -689,8 +715,19 @@ async def settings_income_callback(callback: CallbackQuery, state: FSMContext) -
 
 @router.callback_query(F.data == "settings:salary")
 async def settings_salary_callback(callback: CallbackQuery) -> None:
-    if callback.message is not None:
-        await salary_received(callback.message)
+    if callback.message is None:
+        await callback.answer()
+        return
+    async with SessionLocal() as session:
+        try:
+            user = await AuthService(session, get_settings()).get_or_create_telegram_user(
+                callback.from_user
+            )
+        except AccessDeniedError:
+            await callback.message.answer("Доступ к семейному бюджету ограничен.")
+            await callback.answer()
+            return
+    await create_salary_transaction(callback.message, user)
     await callback.answer()
 
 

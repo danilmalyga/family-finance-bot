@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.base import utcnow
 from app.db.models.family import User
 from app.db.models.transaction import Transaction, TransactionItem
+from app.domain.categories import normalize_category_code
 from app.domain.enums import TransactionSource, TransactionStatus, TransactionType
 from app.integrations.openai_client import OpenAIClient, OpenAIUnavailableError, ParsedReceipt
 from app.repositories.family import FamilyRepository
@@ -106,7 +107,8 @@ class ReceiptService:
                 continue
             quantity = parse_decimal_value(item.quantity) or Decimal("1")
             unit_price = parse_money_value(item.unit_price) if item.unit_price else None
-            item_category = await family_repo.get_category_by_code(user.family_id, item.category_code)
+            category_code = normalize_category_code(item.category_code)
+            item_category = await family_repo.get_category_by_code(user.family_id, category_code)
             chosen_category = item_category or category
             tx_item = TransactionItem(
                 transaction_id=tx.id,

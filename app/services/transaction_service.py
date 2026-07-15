@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.family import User
 from app.db.models.transaction import Transaction
+from app.domain.categories import normalize_category_code
 from app.domain.enums import TransactionSource, TransactionStatus, TransactionType
 from app.integrations.openai_client import OpenAIClient, OpenAIUnavailableError
 from app.repositories.family import FamilyRepository
@@ -29,7 +30,10 @@ class TransactionService:
         parsed = await self.openai_client.parse_transaction(
             text, [{"code": c.code, "name": c.name} for c in categories]
         )
-        category = await family_repo.get_category_by_code(user.family_id, parsed.category_code)
+        category = await family_repo.get_category_by_code(
+            user.family_id,
+            normalize_category_code(parsed.category_code),
+        )
         if category is None:
             category = await family_repo.get_category_by_code(user.family_id, "other")
         tx_date = parse_date(parsed.date, fallback=date.today())

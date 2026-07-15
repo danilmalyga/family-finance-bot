@@ -242,6 +242,33 @@ def test_grocery_week_overspend_does_not_add_remaining_current_week() -> None:
     assert snapshot.groceries_cycle_reserved == Decimal("460.00")
 
 
+def test_dessert_counts_as_groceries_even_without_parent() -> None:
+    item = budget_with_groceries()
+    item.savings_target = Decimal("0.00")
+    item.minimum_reserve = Decimal("0.00")
+    dessert = category("dessert")
+    snapshot = BudgetEngine().build_snapshot(
+        date(2026, 7, 24),
+        [
+            tx(TransactionType.INCOME, "4000", transaction_date=date(2026, 7, 10)),
+            tx(
+                TransactionType.EXPENSE,
+                "12",
+                category_id=dessert.id,
+                transaction_date=date(2026, 7, 24),
+            ),
+        ],
+        item,
+        [],
+        [dessert],
+    )
+
+    assert snapshot.groceries_week is not None
+    assert snapshot.groceries_week.spent == Decimal("12.00")
+    assert snapshot.groceries_cycle_spent == Decimal("12.00")
+    assert snapshot.discretionary_spent == Decimal("0.00")
+
+
 def test_negative_available_keeps_negative_daily_limit() -> None:
     item = budget()
     item.salary_day = 10

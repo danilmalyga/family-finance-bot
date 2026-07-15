@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from html import escape
@@ -9,10 +10,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_family_id, session_dep
 from app.config import Settings, get_settings
+from app.domain.enums import TransactionType
+from app.repositories.transactions import TransactionRepository
 from app.services.budget_engine import BudgetEngine
 from app.utils.money import money
 
 router = APIRouter(tags=["dashboard"])
+
+
+@dataclass(frozen=True)
+class CategoryExpenseDetail:
+    name: str
+    amount: Decimal
+    transaction_date: date
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
@@ -28,11 +38,25 @@ async def dashboard(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid dashboard key")
 
     snapshot = await BudgetEngine(session).get_snapshot(family_id, date.today())
-    html = render_dashboard(snapshot=snapshot, show_test_panel=test)
+    transactions = await TransactionRepository(session).confirmed_between(
+        family_id,
+        snapshot.period_start,
+        snapshot.period_end,
+    )
+    category_details = build_category_expense_details(transactions)
+    html = render_dashboard(
+        snapshot=snapshot,
+        category_details=category_details,
+        show_test_panel=test,
+    )
     return HTMLResponse(html)
 
 
-def render_dashboard(snapshot: object, show_test_panel: bool = False) -> str:
+def render_dashboard(
+    snapshot: object,
+    category_details: dict[str, list[CategoryExpenseDetail]] | None = None,
+    show_test_panel: bool = False,
+) -> str:
     today = date.today()
     income = snapshot.total_income  # type: ignore[attr-defined]
     mandatory = snapshot.mandatory_remaining  # type: ignore[attr-defined]
@@ -41,7 +65,10 @@ def render_dashboard(snapshot: object, show_test_panel: bool = False) -> str:
     available = snapshot.available_to_spend  # type: ignore[attr-defined]
     future_mandatory = future_payments_total(snapshot.upcoming_payments, today)  # type: ignore[attr-defined]
     paid_mandatory = max(Decimal("0"), mandatory - future_mandatory)
-    category_cards = render_category_cards(snapshot.category_summaries)  # type: ignore[attr-defined]
+    category_cards = render_category_cards(
+        snapshot.category_summaries,  # type: ignore[attr-defined]
+        category_details or {},
+    )
     mandatory_overview = render_mandatory_overview(snapshot.upcoming_payments, today)  # type: ignore[attr-defined]
     groceries_focus = render_groceries_focus(snapshot)
     available_status = "Бюджет превышен" if available < 0 else "Бюджет в норме"
@@ -239,6 +266,23 @@ def render_dashboard(snapshot: object, show_test_panel: bool = False) -> str:
       display: grid;
       gap: 8px;
     }}
+    details.mini-card {{
+      display: block;
+    }}
+    .mini-summary {{
+      list-style: none;
+      cursor: pointer;
+      display: grid;
+      gap: 8px;
+    }}
+    .mini-summary::-webkit-details-marker {{ display: none; }}
+    .mini-summary::after {{
+      content: "Показать покупки";
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 2px;
+    }}
+    details[open] .mini-summary::after {{ content: "Скрыть покупки"; }}
     .mini-title {{ font-weight: 700; overflow-wrap: anywhere; }}
     .mini-line {{
       display: grid;
@@ -345,6 +389,31 @@ def render_dashboard(snapshot: object, show_test_panel: bool = False) -> str:
       font-weight: 700;
       white-space: nowrap;
       text-align: right;
+    }}
+    .detail-list {{
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+    }}
+    .detail-row {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
+      font-size: 13px;
+    }}
+    .detail-name {{ overflow-wrap: anywhere; }}
+    .detail-date {{
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 2px;
+    }}
+    .detail-amount {{
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+      white-space: nowrap;
     }}
     .test-panel {{
       border-color: #b8c7d9;
@@ -736,7 +805,44 @@ def render_mandatory_overview(payments: list[object], today: date) -> str:
     return f'<div class="payments-list">{"".join(rows)}</div>'
 
 
-def render_category_cards(categories: list[object]) -> str:
+def build_category_expense_details(transactions: list[object]) -> dict[str, list[CategoryExpenseDetail]]:
+    details: dict[str, list[CategoryExpenseDetail]] = {}
+    for tx in transactions:
+        if tx.type != TransactionType.EXPENSE:  # type: ignore[attr-defined]
+            continue
+        categorized_items = [item for item in tx.items if item.category_id is not None]  # type: ignore[attr-defined]
+        if categorized_items:
+            for item in categorized_items:
+                key = str(item.category_id)
+                details.setdefault(key, []).append(
+                    CategoryExpenseDetail(
+                        name=item.name,
+                        amount=money(item.total_amount),
+                        transaction_date=tx.transaction_date,  # type: ignore[attr-defined]
+                    )
+                )
+            continue
+        if tx.category_id is None:  # type: ignore[attr-defined]
+            continue
+        key = str(tx.category_id)  # type: ignore[attr-defined]
+        name = tx.merchant or tx.description or "Операция"  # type: ignore[attr-defined]
+        details.setdefault(key, []).append(
+            CategoryExpenseDetail(
+                name=str(name),
+                amount=money(tx.amount),  # type: ignore[attr-defined]
+                transaction_date=tx.transaction_date,  # type: ignore[attr-defined]
+            )
+        )
+
+    for items in details.values():
+        items.sort(key=lambda item: item.transaction_date, reverse=True)
+    return details
+
+
+def render_category_cards(
+    categories: list[object],
+    details_by_category: dict[str, list[CategoryExpenseDetail]],
+) -> str:
     visible = [category for category in categories if category.spent > 0 or category.monthly_limit]  # type: ignore[attr-defined]
     visible.sort(key=lambda category: category.spent, reverse=True)  # type: ignore[attr-defined]
     if not visible:
@@ -751,19 +857,43 @@ def render_category_cards(categories: list[object]) -> str:
         share_pct = percent(spent, total_spent)
         limit_text = format_money(limit) if limit else "не установлен"
         remaining_text = format_money(remaining) if remaining is not None else "—"
+        category_key = str(category.category_id) if category.category_id else ""  # type: ignore[attr-defined]
+        detail_rows = render_category_detail_rows(details_by_category.get(category_key, []))
         cards.append(
             f"""
-            <div class="mini-card">
-              <div class="mini-title">{escape(category.name)}</div>
-              <div class="mini-line"><span>Потрачено</span><strong>{format_money(spent)}</strong></div>
-              <div class="mini-line"><span>Доля расходов</span><strong>{share_pct}%</strong></div>
-              <div class="mini-line"><span>Лимит</span><strong>{limit_text}</strong></div>
-              <div class="mini-line"><span>Осталось</span><strong>{remaining_text}</strong></div>
-              <div class="bar"><div class="fill {'warn' if pct >= 90 else ''}" style="width:{pct or share_pct}%"></div></div>
-            </div>
+            <details class="mini-card">
+              <summary class="mini-summary">
+                <div class="mini-title">{escape(category.name)}</div>
+                <div class="mini-line"><span>Потрачено</span><strong>{format_money(spent)}</strong></div>
+                <div class="mini-line"><span>Доля расходов</span><strong>{share_pct}%</strong></div>
+                <div class="mini-line"><span>Лимит</span><strong>{limit_text}</strong></div>
+                <div class="mini-line"><span>Осталось</span><strong>{remaining_text}</strong></div>
+                <div class="bar"><div class="fill {'warn' if pct >= 90 else ''}" style="width:{pct or share_pct}%"></div></div>
+              </summary>
+              {detail_rows}
+            </details>
             """
         )
     return f'<div class="cards-grid">{"".join(cards)}</div>'
+
+
+def render_category_detail_rows(items: list[CategoryExpenseDetail]) -> str:
+    if not items:
+        return '<div class="detail-list"><div class="muted">Покупки по категории не найдены.</div></div>'
+    rows = []
+    for item in items:
+        rows.append(
+            f"""
+            <div class="detail-row">
+              <div>
+                <div class="detail-name">{escape(item.name)}</div>
+                <div class="detail-date">{format_date(item.transaction_date)}</div>
+              </div>
+              <div class="detail-amount">{format_money(item.amount)}</div>
+            </div>
+            """
+        )
+    return f'<div class="detail-list">{"".join(rows)}</div>'
 
 
 def future_payments_total(payments: list[object], today: date) -> Decimal:

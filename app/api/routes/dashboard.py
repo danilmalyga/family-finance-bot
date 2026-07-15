@@ -6,11 +6,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_family_id, session_dep
 from app.config import Settings, get_settings
+from app.db.models.transaction import TransactionItem
 from app.domain.enums import TransactionType
+from app.repositories.family import FamilyRepository
 from app.repositories.transactions import TransactionRepository
 from app.services.budget_engine import BudgetEngine
 from app.utils.money import money
@@ -20,9 +23,22 @@ router = APIRouter(tags=["dashboard"])
 
 @dataclass(frozen=True)
 class CategoryExpenseDetail:
+    id: UUID
+    target: str
     name: str
     amount: Decimal
     transaction_date: date
+    category_code: str
+
+
+@dataclass(frozen=True)
+class DashboardCategoryOption:
+    code: str
+    name: str
+
+
+class CategoryChangePayload(BaseModel):
+    category_code: str
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
@@ -33,9 +49,7 @@ async def dashboard(
     family_id: UUID = Depends(current_family_id),
     session: AsyncSession = Depends(session_dep),
 ) -> HTMLResponse:
-    expected = settings.api_secret_key.get_secret_value() if settings.api_secret_key else ""
-    if expected and key != expected:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid dashboard key")
+    validate_dashboard_key(key, settings)
 
     snapshot = await BudgetEngine(session).get_snapshot(family_id, date.today())
     transactions = await TransactionRepository(session).confirmed_between(
@@ -43,18 +57,75 @@ async def dashboard(
         snapshot.period_start,
         snapshot.period_end,
     )
-    category_details = build_category_expense_details(transactions)
+    categories = await FamilyRepository(session).list_categories(family_id)
+    category_details = build_category_expense_details(transactions, categories)
+    category_options = [
+        DashboardCategoryOption(code=category.code, name=category.name) for category in categories
+    ]
     html = render_dashboard(
         snapshot=snapshot,
         category_details=category_details,
+        category_options=category_options,
         show_test_panel=test,
     )
     return HTMLResponse(html)
 
 
+@router.patch("/dashboard/api/transaction-items/{item_id}/category")
+async def update_dashboard_item_category(
+    item_id: UUID,
+    payload: CategoryChangePayload,
+    key: str | None = Query(default=None),
+    settings: Settings = Depends(get_settings),
+    family_id: UUID = Depends(current_family_id),
+    session: AsyncSession = Depends(session_dep),
+) -> dict[str, bool]:
+    validate_dashboard_key(key, settings)
+    item = await session.get(TransactionItem, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    tx = await TransactionRepository(session).get(item.transaction_id)
+    if tx is None or tx.family_id != family_id:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    category = await FamilyRepository(session).get_category_by_code(family_id, payload.category_code)
+    if category is None:
+        raise HTTPException(status_code=404, detail="Category not found")
+    item.category_id = category.id
+    await session.commit()
+    return {"updated": True}
+
+
+@router.patch("/dashboard/api/transactions/{transaction_id}/category")
+async def update_dashboard_transaction_category(
+    transaction_id: UUID,
+    payload: CategoryChangePayload,
+    key: str | None = Query(default=None),
+    settings: Settings = Depends(get_settings),
+    family_id: UUID = Depends(current_family_id),
+    session: AsyncSession = Depends(session_dep),
+) -> dict[str, bool]:
+    validate_dashboard_key(key, settings)
+    tx = await TransactionRepository(session).get(transaction_id)
+    if tx is None or tx.family_id != family_id:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    category = await FamilyRepository(session).get_category_by_code(family_id, payload.category_code)
+    if category is None:
+        raise HTTPException(status_code=404, detail="Category not found")
+    tx.category_id = category.id
+    await session.commit()
+    return {"updated": True}
+
+
+def validate_dashboard_key(key: str | None, settings: Settings) -> None:
+    expected = settings.api_secret_key.get_secret_value() if settings.api_secret_key else ""
+    if expected and key != expected:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid dashboard key")
+
+
 def render_dashboard(
     snapshot: object,
     category_details: dict[str, list[CategoryExpenseDetail]] | None = None,
+    category_options: list[DashboardCategoryOption] | None = None,
     show_test_panel: bool = False,
 ) -> str:
     today = date.today()
@@ -63,11 +134,13 @@ def render_dashboard(
     discretionary = snapshot.discretionary_spent  # type: ignore[attr-defined]
     savings = snapshot.total_savings  # type: ignore[attr-defined]
     available = snapshot.available_to_spend  # type: ignore[attr-defined]
+    factual_available = money(income - mandatory - snapshot.total_expenses)  # type: ignore[attr-defined]
     future_mandatory = future_payments_total(snapshot.upcoming_payments, today)  # type: ignore[attr-defined]
     paid_mandatory = max(Decimal("0"), mandatory - future_mandatory)
     category_cards = render_category_cards(
         snapshot.category_summaries,  # type: ignore[attr-defined]
         category_details or {},
+        category_options or [],
     )
     mandatory_overview = render_mandatory_overview(snapshot.upcoming_payments, today)  # type: ignore[attr-defined]
     groceries_focus = render_groceries_focus(snapshot)
@@ -415,6 +488,22 @@ def render_dashboard(
       font-weight: 700;
       white-space: nowrap;
     }}
+    .category-select {{
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 8px;
+      margin-top: 7px;
+      background: var(--panel);
+      color: var(--ink);
+      font: inherit;
+      font-size: 13px;
+    }}
+    .detail-error {{
+      color: var(--bad);
+      font-size: 12px;
+      margin-top: 4px;
+    }}
     .test-panel {{
       border-color: #b8c7d9;
       background: #f9fbfd;
@@ -502,7 +591,54 @@ def render_dashboard(
       <h2>Расходы по категориям</h2>
       {category_cards}
     </section>
+
+    <section class="card">
+      <h2>Фактический остаток</h2>
+      <div class="hero-value {'danger' if factual_available < 0 else ''}">{format_money(factual_available)}</div>
+      <div class="hero-note">Зарплата минус все обязательные платежи зарплатного цикла и фактические траты.</div>
+      <div class="breakdown">
+        <div class="breakdown-row"><span>Зарплата</span><strong>{format_money(income)}</strong></div>
+        <div class="breakdown-row"><span>Обязательные платежи цикла</span><strong>−{format_money(mandatory)}</strong></div>
+        <div class="breakdown-row"><span>Фактические траты</span><strong>−{format_money(snapshot.total_expenses)}</strong></div>
+        <div class="breakdown-row total"><span>Фактический остаток</span><strong>{format_money(factual_available)}</strong></div>
+      </div>
+    </section>
   </main>
+  <script>
+    (() => {{
+      const params = new URLSearchParams(window.location.search);
+      const key = params.get("key") || "";
+      document.querySelectorAll("[data-category-editor]").forEach((select) => {{
+        select.addEventListener("change", async () => {{
+          const target = select.dataset.target;
+          const id = select.dataset.id;
+          const categoryCode = select.value;
+          const row = select.closest(".detail-row");
+          const error = row?.querySelector(".detail-error");
+          if (error) error.textContent = "";
+          if (!target || !id || !categoryCode) return;
+          const endpoint = target === "item"
+            ? `/dashboard/api/transaction-items/${{id}}/category?key=${{encodeURIComponent(key)}}`
+            : `/dashboard/api/transactions/${{id}}/category?key=${{encodeURIComponent(key)}}`;
+          select.disabled = true;
+          try {{
+            const response = await fetch(endpoint, {{
+              method: "PATCH",
+              headers: {{"Content-Type": "application/json"}},
+              body: JSON.stringify({{category_code: categoryCode}}),
+            }});
+            if (!response.ok) {{
+              throw new Error("Не удалось сохранить категорию");
+            }}
+            window.location.reload();
+          }} catch (err) {{
+            if (error) error.textContent = "Не удалось сохранить категорию.";
+            select.disabled = false;
+          }}
+        }});
+      }});
+    }})();
+  </script>
 </body>
 </html>"""
 
@@ -805,7 +941,11 @@ def render_mandatory_overview(payments: list[object], today: date) -> str:
     return f'<div class="payments-list">{"".join(rows)}</div>'
 
 
-def build_category_expense_details(transactions: list[object]) -> dict[str, list[CategoryExpenseDetail]]:
+def build_category_expense_details(
+    transactions: list[object],
+    categories: list[object],
+) -> dict[str, list[CategoryExpenseDetail]]:
+    category_by_id = {category.id: category for category in categories}  # type: ignore[attr-defined]
     details: dict[str, list[CategoryExpenseDetail]] = {}
     for tx in transactions:
         if tx.type != TransactionType.EXPENSE:  # type: ignore[attr-defined]
@@ -814,23 +954,31 @@ def build_category_expense_details(transactions: list[object]) -> dict[str, list
         if categorized_items:
             for item in categorized_items:
                 key = str(item.category_id)
+                category = category_by_id.get(item.category_id)
                 details.setdefault(key, []).append(
                     CategoryExpenseDetail(
+                        id=item.id,
+                        target="item",
                         name=item.name,
                         amount=money(item.total_amount),
                         transaction_date=tx.transaction_date,  # type: ignore[attr-defined]
+                        category_code=category.code if category else "",
                     )
                 )
             continue
         if tx.category_id is None:  # type: ignore[attr-defined]
             continue
         key = str(tx.category_id)  # type: ignore[attr-defined]
+        category = category_by_id.get(tx.category_id)  # type: ignore[attr-defined]
         name = tx.merchant or tx.description or "Операция"  # type: ignore[attr-defined]
         details.setdefault(key, []).append(
             CategoryExpenseDetail(
+                id=tx.id,  # type: ignore[attr-defined]
+                target="transaction",
                 name=str(name),
                 amount=money(tx.amount),  # type: ignore[attr-defined]
                 transaction_date=tx.transaction_date,  # type: ignore[attr-defined]
+                category_code=category.code if category else "",
             )
         )
 
@@ -842,6 +990,7 @@ def build_category_expense_details(transactions: list[object]) -> dict[str, list
 def render_category_cards(
     categories: list[object],
     details_by_category: dict[str, list[CategoryExpenseDetail]],
+    category_options: list[DashboardCategoryOption],
 ) -> str:
     visible = [category for category in categories if category.spent > 0 or category.monthly_limit]  # type: ignore[attr-defined]
     visible.sort(key=lambda category: category.spent, reverse=True)  # type: ignore[attr-defined]
@@ -858,7 +1007,10 @@ def render_category_cards(
         limit_text = format_money(limit) if limit else "не установлен"
         remaining_text = format_money(remaining) if remaining is not None else "—"
         category_key = str(category.category_id) if category.category_id else ""  # type: ignore[attr-defined]
-        detail_rows = render_category_detail_rows(details_by_category.get(category_key, []))
+        detail_rows = render_category_detail_rows(
+            details_by_category.get(category_key, []),
+            category_options,
+        )
         cards.append(
             f"""
             <details class="mini-card">
@@ -877,7 +1029,10 @@ def render_category_cards(
     return f'<div class="cards-grid">{"".join(cards)}</div>'
 
 
-def render_category_detail_rows(items: list[CategoryExpenseDetail]) -> str:
+def render_category_detail_rows(
+    items: list[CategoryExpenseDetail],
+    category_options: list[DashboardCategoryOption],
+) -> str:
     if not items:
         return '<div class="detail-list"><div class="muted">Покупки по категории не найдены.</div></div>'
     rows = []
@@ -888,12 +1043,32 @@ def render_category_detail_rows(items: list[CategoryExpenseDetail]) -> str:
               <div>
                 <div class="detail-name">{escape(item.name)}</div>
                 <div class="detail-date">{format_date(item.transaction_date)}</div>
+                {render_category_select(item, category_options)}
+                <div class="detail-error"></div>
               </div>
               <div class="detail-amount">{format_money(item.amount)}</div>
             </div>
             """
         )
     return f'<div class="detail-list">{"".join(rows)}</div>'
+
+
+def render_category_select(
+    item: CategoryExpenseDetail,
+    category_options: list[DashboardCategoryOption],
+) -> str:
+    options = []
+    for category in category_options:
+        selected = " selected" if category.code == item.category_code else ""
+        options.append(
+            f'<option value="{escape(category.code)}"{selected}>{escape(category.name)}</option>'
+        )
+    return (
+        f'<select class="category-select" data-category-editor data-target="{escape(item.target)}" '
+        f'data-id="{item.id}">'
+        f'{"".join(options)}'
+        "</select>"
+    )
 
 
 def future_payments_total(payments: list[object], today: date) -> Decimal:

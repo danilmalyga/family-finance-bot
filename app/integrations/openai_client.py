@@ -1,7 +1,7 @@
 import base64
 import json
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar, cast
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, RateLimitError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -59,6 +59,23 @@ class PurchaseExplanation(BaseModel):
     explanation: str
     recommended_date: str | None = None
     wishlist_recommended: bool = True
+
+
+class PurchaseDialogReply(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: PurchaseDecision
+    title: str
+    message: str
+    should_continue: bool
+    recommended_action: Literal[
+        "continue_dialog",
+        "buy_if_still_needed",
+        "postpone",
+        "add_to_wishlist",
+        "compare_price",
+        "wait_24_hours",
+    ]
 
 
 def read_prompt(name: str) -> str:
@@ -133,6 +150,13 @@ class OpenAIClient:
             model_cls=PurchaseExplanation,
         )
 
+    async def continue_purchase_dialog(self, payload: dict[str, Any]) -> PurchaseDialogReply:
+        return await self._json_call(
+            prompt=read_prompt("purchase_dialog.md"),
+            payload=payload,
+            model_cls=PurchaseDialogReply,
+        )
+
     async def _json_call(
         self, prompt: str, payload: dict[str, Any], model_cls: type[ModelT]
     ) -> ModelT:
@@ -173,13 +197,17 @@ def parse_model_json(content: str, model_cls: type[ModelT]) -> ModelT:
 
 def openai_json_schema(model_cls: type[BaseModel]) -> dict[str, Any]:
     schema = model_cls.model_json_schema()
-    return forbid_additional_properties(schema)
+    return cast(dict[str, Any], forbid_additional_properties(schema))
 
 
 def forbid_additional_properties(value: Any) -> Any:
     if isinstance(value, dict):
-        value.pop("default", None)
-        value.pop("title", None)
+        is_schema_object = any(
+            key in value for key in ("type", "properties", "$ref", "enum", "anyOf", "items")
+        )
+        if is_schema_object:
+            value.pop("default", None)
+            value.pop("title", None)
         if value.get("type") == "object" or "properties" in value:
             value["additionalProperties"] = False
             if isinstance(value.get("properties"), dict):

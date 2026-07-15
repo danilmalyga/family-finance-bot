@@ -5,6 +5,8 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
+from app.domain.purchase_personas import PURCHASE_PERSONAS
+
 
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -75,16 +77,31 @@ def settings_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Добавить доход вручную", callback_data="settings:income")],
             [InlineKeyboardButton(text="Бюджет продуктов на неделю", callback_data="settings:groceries")],
             [InlineKeyboardButton(text="Обязательный платёж", callback_data="settings:payment")],
+            [InlineKeyboardButton(text="Личность советника", callback_data="settings:persona")],
         ]
     )
+
+
+def purchase_persona_keyboard(current_code: str) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{'✅ ' if persona.code == current_code else ''}{persona.label}",
+                callback_data=f"settings:persona:{persona.code}",
+            )
+        ]
+        for persona in PURCHASE_PERSONAS
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def purchase_keyboard(name: str, amount: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="Продолжить диалог", callback_data="purchase:ask")],
             [InlineKeyboardButton(text="Добавить в список желаний", callback_data=f"wish:add:{name}:{amount}")],
             [InlineKeyboardButton(text="Купить всё равно", callback_data="purchase:anyway")],
             [InlineKeyboardButton(text="Изменить сумму", callback_data="purchase:amount")],
-            [InlineKeyboardButton(text="Отмена", callback_data="purchase:cancel")],
+            [InlineKeyboardButton(text="Закончить консультацию", callback_data="purchase:cancel")],
         ]
     )

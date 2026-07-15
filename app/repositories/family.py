@@ -32,14 +32,14 @@ class FamilyRepository:
         for code, label, parent_code in DEFAULT_CATEGORIES:
             if code not in existing:
                 parent = existing.get(parent_code) if parent_code else None
-                category = Category(
+                new_category = Category(
                     family_id=family_id,
                     code=code,
                     name=label,
                     parent_id=parent.id if parent else None,
                 )
-                self.session.add(category)
-                existing[code] = category
+                self.session.add(new_category)
+                existing[code] = new_category
         await self.session.flush()
         for code, _label, parent_code in DEFAULT_CATEGORIES:
             if not parent_code:

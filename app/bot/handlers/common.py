@@ -1,7 +1,9 @@
 import asyncio
 import logging
+from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -17,15 +19,18 @@ from app.bot.keyboards.main import (
     draft_keyboard,
     main_menu,
     purchase_keyboard,
+    purchase_persona_keyboard,
     receipt_items_keyboard,
     settings_keyboard,
 )
 from app.bot.states.forms import AddExpense, AddIncome, PurchaseCheck, SettingsFlow
 from app.config import get_settings
-from app.db.models.family import User
+from app.db.models.budget import FinancialGoal
+from app.db.models.family import Family, User
 from app.db.models.transaction import Transaction, TransactionItem
 from app.db.session import SessionLocal
 from app.domain.enums import TransactionSource, TransactionStatus, TransactionType, WishlistStatus
+from app.domain.purchase_personas import PURCHASE_PERSONAS_BY_CODE, get_purchase_persona
 from app.integrations.openai_client import OpenAIClient, OpenAIUnavailableError
 from app.repositories.budget import BudgetRepository
 from app.repositories.family import FamilyRepository
@@ -426,24 +431,155 @@ async def purchase_text(message: Message, state: FSMContext) -> None:
         engine = BudgetEngine(session)
         snapshot = await engine.get_snapshot(user.family_id, date.today())
         advice = engine.advise_purchase(snapshot, PurchaseRequest(name=name, amount=amount))
+        family = await session.get(Family, user.family_id)
+        active_goals = await session.scalars(
+            select(FinancialGoal)
+            .where(FinancialGoal.family_id == user.family_id, FinancialGoal.is_active.is_(True))
+            .order_by(FinancialGoal.priority, FinancialGoal.target_date)
+            .limit(5)
+        )
+        persona = get_purchase_persona(
+            family.purchase_advisor_persona if family is not None else None
+        )
+        goals_payload = [
+            {
+                "name": goal.name,
+                "target_amount": str(goal.target_amount),
+                "current_amount": str(goal.current_amount),
+                "target_date": goal.target_date.isoformat() if goal.target_date else None,
+                "priority": goal.priority,
+            }
+            for goal in active_goals
+        ]
+        advice_payload = {
+            "advisor_persona": {
+                "code": persona.code,
+                "label": persona.label,
+                "description": persona.short_description,
+                "instructions": persona.instructions,
+            },
+            "purchase": advice.purchase.model_dump(mode="json"),
+            "decision": advice.decision,
+            "calculation": advice.model_dump(mode="json"),
+            "snapshot": snapshot.model_dump(mode="json"),
+            "financial_goals": goals_payload,
+        }
         try:
-            explanation = await OpenAIClient(get_settings()).explain_purchase(
+            dialog_reply = await OpenAIClient(get_settings()).continue_purchase_dialog(
                 {
-                    "purchase": advice.purchase.model_dump(mode="json"),
-                    "decision": advice.decision,
-                    "calculation": advice.model_dump(mode="json"),
-                    "snapshot": snapshot.model_dump(mode="json"),
+                    **advice_payload,
+                    "initial_consultation": True,
+                    "user_answer": f"Я хочу купить: {name}, сумма: {amount}",
+                    "dialog_history": [],
+                    "dialog_turn": 0,
                 }
             )
-            text = f"{explanation.title}\n\n{explanation.explanation}"
-        except OpenAIUnavailableError:
-            text = (
-                f"Решение: {advice.decision}.\n"
-                f"После покупки останется {fmt_money(advice.available_after_purchase)}. "
-                f"Дневной лимит станет {fmt_money(advice.daily_limit_after)}."
+            text = format_purchase_advice_message(
+                fmt_money(advice.available_after_purchase),
+                fmt_money(advice.daily_limit_after),
+                dialog_reply.title,
+                dialog_reply.message,
             )
+        except OpenAIUnavailableError as exc:
+            logger.warning("Initial purchase advice AI unavailable: %s", exc)
+            text = format_purchase_advice_message(
+                fmt_money(advice.available_after_purchase),
+                fmt_money(advice.daily_limit_after),
+                "Давайте обдумаем покупку",
+                build_purchase_fallback_question(name, goals_payload),
+            )
+    await state.update_data(
+        purchase_name=name,
+        purchase_amount=str(amount),
+        purchase_advice_payload=advice_payload,
+        purchase_dialog_history=[{"role": "assistant", "content": text}],
+        purchase_dialog_turn=0,
+    )
     await message.answer(text, reply_markup=purchase_keyboard(name, str(amount)))
-    await state.clear()
+    await state.set_state(PurchaseCheck.waiting_followup)
+    await message.answer(
+        "Ответьте советнику обычным сообщением. Если хотите выйти из диалога, нажмите «⬅️ Главное меню».",
+        reply_markup=back_to_main_menu(),
+    )
+
+
+@router.message(PurchaseCheck.waiting_followup)
+async def purchase_followup_text(message: Message, state: FSMContext) -> None:
+    if await return_to_main_menu_if_requested(message, state):
+        return
+    if not message.text:
+        return
+    data = await state.get_data()
+    payload = data.get("purchase_advice_payload")
+    name = str(data.get("purchase_name", "Покупка"))
+    amount = str(data.get("purchase_amount", "0"))
+    history = data.get("purchase_dialog_history", [])
+    turn = int(data.get("purchase_dialog_turn", 0)) + 1
+    if not isinstance(payload, dict):
+        await state.set_state(PurchaseCheck.waiting_text)
+        await message.answer("Введите покупку и сумму заново, например: Парфюм 140 евро")
+        return
+    if not isinstance(history, list):
+        history = []
+    calculation = payload.get("calculation", {})
+    available_after_purchase = fmt_money(
+        Decimal(str(calculation.get("available_after_purchase", "0")))
+    )
+    daily_limit_after = fmt_money(Decimal(str(calculation.get("daily_limit_after", "0"))))
+    should_continue_dialog = True
+    try:
+        dialog_reply = await OpenAIClient(get_settings()).continue_purchase_dialog(
+            {
+                **payload,
+                "dialog_history": history,
+                "user_answer": message.text,
+                "dialog_turn": turn,
+            }
+        )
+        text = format_purchase_advice_message(
+            available_after_purchase,
+            daily_limit_after,
+            dialog_reply.title,
+            dialog_reply.message,
+        )
+        history.extend(
+            [
+                {"role": "user", "content": message.text},
+                {"role": "assistant", "content": dialog_reply.message},
+            ]
+        )
+        await state.update_data(
+            purchase_dialog_history=history[-8:],
+            purchase_dialog_turn=turn,
+        )
+        should_continue_dialog = dialog_reply.should_continue
+    except OpenAIUnavailableError as exc:
+        logger.warning("Purchase dialog AI unavailable: %s", exc)
+        fallback_message = (
+            "Я временно не могу получить ответ ИИ, но консультацию можно продолжить. "
+            "Давайте проверим рациональность вручную: если отложить покупку на 24 часа, "
+            "вы всё ещё будете хотеть её так же сильно?"
+        )
+        text = format_purchase_advice_message(
+            available_after_purchase,
+            daily_limit_after,
+            "Проверим решение спокойно",
+            fallback_message,
+        )
+        history.extend(
+            [
+                {"role": "user", "content": message.text},
+                {"role": "assistant", "content": fallback_message},
+            ]
+        )
+        await state.update_data(
+            purchase_dialog_history=history[-8:],
+            purchase_dialog_turn=turn,
+        )
+    await message.answer(text, reply_markup=purchase_keyboard(name, amount))
+    if not should_continue_dialog:
+        await state.clear()
+        await message.answer("Диалог завершён. Выберите действие кнопками выше или вернитесь в меню.")
 
 
 @router.message(F.photo)
@@ -667,6 +803,46 @@ async def add_wish(callback: CallbackQuery) -> None:
             await callback.answer("Не удалось добавить")
 
 
+@router.callback_query(F.data == "purchase:ask")
+async def purchase_ask_followup(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(PurchaseCheck.waiting_followup)
+    if callback.message is not None:
+        await callback.message.answer(
+            "Напишите ответ советнику или уточняющий вопрос по этой покупке.",
+            reply_markup=back_to_main_menu(),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "purchase:anyway")
+async def purchase_anyway(callback: CallbackQuery) -> None:
+    if callback.message is not None:
+        await callback.message.answer(
+            "Ок. Я не буду создавать расход автоматически. "
+            "Когда покупка реально совершена, добавьте её как обычный расход."
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "purchase:amount")
+async def purchase_change_amount(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(PurchaseCheck.waiting_text)
+    if callback.message is not None:
+        await callback.message.answer(
+            "Введите покупку с новой суммой, например: Парфюм 120 евро",
+            reply_markup=back_to_main_menu(),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "purchase:cancel")
+async def purchase_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    if callback.message is not None:
+        await callback.message.answer("Консультация завершена.", reply_markup=main_menu())
+    await callback.answer()
+
+
 async def menu_action(message: Message) -> None:
     if message.text == "⬅️ Главное меню":
         await message.answer("Главное меню.", reply_markup=main_menu())
@@ -727,7 +903,7 @@ async def settings_salary_callback(callback: CallbackQuery) -> None:
             await callback.message.answer("Доступ к семейному бюджету ограничен.")
             await callback.answer()
             return
-    await create_salary_transaction(callback.message, user)
+    await create_salary_transaction(callback.message, user)  # type: ignore[arg-type]
     await callback.answer()
 
 
@@ -735,6 +911,59 @@ async def settings_salary_callback(callback: CallbackQuery) -> None:
 async def settings_payment_callback(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(SettingsFlow.waiting_payment)
     await callback.message.answer(payment_settings_help(), reply_markup=back_to_main_menu())  # type: ignore[union-attr]
+    await callback.answer()
+
+
+@router.callback_query(F.data == "settings:persona")
+async def settings_persona_callback(callback: CallbackQuery) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    async with SessionLocal() as session:
+        try:
+            user = await AuthService(session, get_settings()).get_or_create_telegram_user(
+                callback.from_user
+            )
+        except AccessDeniedError:
+            await callback.message.answer("Доступ к семейному бюджету ограничен.")
+            await callback.answer()
+            return
+        family = await session.get(Family, user.family_id)
+        current_code = family.purchase_advisor_persona if family is not None else "future_self"
+    await callback.message.answer(
+        "Выберите личность для раздела «Можно ли купить?»:",
+        reply_markup=purchase_persona_keyboard(current_code),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("settings:persona:"))
+async def settings_persona_set_callback(callback: CallbackQuery) -> None:
+    if callback.message is None or callback.data is None:
+        await callback.answer()
+        return
+    persona_code = callback.data.rsplit(":", 1)[-1]
+    persona = PURCHASE_PERSONAS_BY_CODE.get(persona_code)
+    if persona is None:
+        await callback.answer("Неизвестная личность")
+        return
+    async with SessionLocal() as session:
+        try:
+            user = await AuthService(session, get_settings()).get_or_create_telegram_user(
+                callback.from_user
+            )
+        except AccessDeniedError:
+            await callback.message.answer("Доступ к семейному бюджету ограничен.")
+            await callback.answer()
+            return
+        family = await session.get(Family, user.family_id)
+        if family is not None:
+            family.purchase_advisor_persona = persona.code
+        await session.commit()
+    await callback.message.answer(
+        f"Личность советника сохранена: {persona.label}\n{persona.short_description}",
+        reply_markup=settings_keyboard(),
+    )
     await callback.answer()
 
 
@@ -760,7 +989,41 @@ def format_transaction(tx: Transaction) -> str:
     )
 
 
-def format_receipt_items(items: list[object]) -> str:
+def format_purchase_advice_message(
+    available_after_purchase: str,
+    daily_limit_after: str,
+    title: str,
+    explanation: str,
+) -> str:
+    return (
+        f"После покупки останется {available_after_purchase}. "
+        f"Дневной лимит станет {daily_limit_after}.\n\n"
+        f"{title}\n\n"
+        f"{explanation}"
+    )
+
+
+def build_purchase_fallback_question(name: str, goals: list[dict[str, Any]]) -> str:
+    goal_text = ""
+    if goals:
+        goal_name = str(goals[0].get("name") or "финансовая цель")
+        goal_text = f" И ещё стоит держать в голове цель: {goal_name}."
+    normalized_name = name.lower()
+    if any(word in normalized_name for word in ("духи", "парфюм", "perfume", "parfum")):
+        return (
+            "По парфюму я бы сначала проверил, не эмоциональная ли это покупка. "
+            "Сколько ароматов у вас уже есть, и есть ли ближайший день рождения или повод, "
+            "когда это можно попросить в подарок?"
+            f"{goal_text}"
+        )
+    return (
+        "Перед покупкой я бы сделал короткую паузу и проверил, насколько вещь нужна именно сейчас. "
+        "Если отложить решение на 24 часа, вы всё ещё будете хотеть купить это так же сильно?"
+        f"{goal_text}"
+    )
+
+
+def format_receipt_items(items: Sequence[object]) -> str:
     if not items:
         return ""
     lines = ["", "Позиции:"]

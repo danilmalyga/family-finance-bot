@@ -289,11 +289,14 @@ def sum_discretionary_spent(
             item_total = ZERO
             for item in categorized_items:
                 item_total = money(item_total + item.total_amount)
-                category = category_by_id.get(item.category_id)
+                item_category_id = item.category_id
+                if item_category_id is None:
+                    continue
+                category = category_by_id.get(item_category_id)
                 if category is None:
                     total = money(total + item.total_amount)
                     continue
-                if item.category_id in mandatory_category_ids or category.code in excluded_category_codes:
+                if item_category_id in mandatory_category_ids or category.code in excluded_category_codes:
                     continue
                 total = money(total + item.total_amount)
             diff = money(tx.amount - item_total)
@@ -552,7 +555,10 @@ def sum_expenses_for_category_codes(
         categorized_items = [item for item in tx.items if item.category_id is not None]
         if categorized_items:
             for item in categorized_items:
-                category = category_by_id.get(item.category_id)
+                item_category_id = item.category_id
+                if item_category_id is None:
+                    continue
+                category = category_by_id.get(item_category_id)
                 if category and category.code in category_codes:
                     total = money(total + item.total_amount)
             continue

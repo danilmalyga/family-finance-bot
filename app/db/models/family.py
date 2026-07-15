@@ -13,6 +13,7 @@ class Family(UUIDMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(255))
     currency: Mapped[str] = mapped_column(String(3), default="EUR")
     timezone: Mapped[str] = mapped_column(String(64), default="Europe/Madrid")
+    purchase_advisor_persona: Mapped[str] = mapped_column(String(64), default="future_self")
 
     users: Mapped[list["User"]] = relationship(back_populates="family")
     categories: Mapped[list["Category"]] = relationship(back_populates="family")

@@ -11,6 +11,7 @@ class AddIncome(StatesGroup):
 
 class PurchaseCheck(StatesGroup):
     waiting_text = State()
+    waiting_followup = State()
 
 
 class SettingsFlow(StatesGroup):

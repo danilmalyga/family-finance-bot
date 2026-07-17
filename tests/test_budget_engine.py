@@ -21,6 +21,7 @@ def tx(
     status: str = "confirmed",
     category_id: uuid.UUID | None = None,
     transaction_date: date = date(2026, 7, 12),
+    external_hash: str | None = None,
 ) -> Transaction:
     return Transaction(
         id=uuid.uuid4(),
@@ -34,6 +35,7 @@ def tx(
         currency="EUR",
         description="test",
         category_id=category_id,
+        external_hash=external_hash,
     )
 
 
@@ -274,8 +276,9 @@ def test_current_grocery_week_overspend_reduces_future_week_reserve() -> None:
     assert snapshot.groceries_cycle_reserved == Decimal("600.00")
 
 
-def test_mandatory_payment_progress_tracks_spent_by_category() -> None:
+def test_mandatory_payment_progress_tracks_only_button_payments() -> None:
     child = category("child")
+    child_payment = payment("500", payment_day=15, category_id=child.id)
     snapshot = BudgetEngine().build_snapshot(
         date(2026, 7, 20),
         [
@@ -286,17 +289,24 @@ def test_mandatory_payment_progress_tracks_spent_by_category() -> None:
                 category_id=child.id,
                 transaction_date=date(2026, 7, 18),
             ),
+            tx(
+                TransactionType.EXPENSE,
+                "25",
+                category_id=child.id,
+                transaction_date=date(2026, 7, 18),
+                external_hash=f"mandatory-payment:{child_payment.id}",
+            ),
         ],
         budget_with_groceries(),
-        [payment("500", payment_day=15, category_id=child.id)],
+        [child_payment],
         [child],
     )
 
     assert len(snapshot.mandatory_payment_progress) == 1
     progress = snapshot.mandatory_payment_progress[0]
     assert progress.amount == Decimal("500.00")
-    assert progress.spent == Decimal("270.00")
-    assert progress.remaining == Decimal("230.00")
+    assert progress.spent == Decimal("25.00")
+    assert progress.remaining == Decimal("475.00")
     assert progress.category_name == "child"
 
 

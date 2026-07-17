@@ -429,6 +429,7 @@ async def mandatory_payment_amount_text(message: Message, state: FSMContext) -> 
                 transaction_date=date.today(),
                 source=TransactionSource.MANUAL,
                 status=TransactionStatus.CONFIRMED,
+                external_hash=f"mandatory-payment:{payment.id}",
             )
         )
         await session.commit()

@@ -470,15 +470,11 @@ def mandatory_payment_progress(
             continue
         allocated = money(payment.amount * Decimal(len(due_dates)))
         category = category_by_id.get(payment.category_id) if payment.category_id else None
-        spent = (
-            sum_expenses_for_category_ids(
-                transactions,
-                {payment.category_id},
-                period_start,
-                period_end,
-            )
-            if payment.category_id is not None
-            else ZERO
+        spent = sum_mandatory_payment_transactions(
+            transactions,
+            payment.id,
+            period_start,
+            period_end,
         )
         progress_items.append(
             MandatoryPaymentProgress(
@@ -492,6 +488,24 @@ def mandatory_payment_progress(
             )
         )
     return progress_items
+
+
+def sum_mandatory_payment_transactions(
+    transactions: list[Transaction],
+    payment_id: uuid.UUID,
+    period_start: date,
+    period_end: date,
+) -> Decimal:
+    marker = f"mandatory-payment:{payment_id}"
+    total = ZERO
+    for tx in transactions:
+        if (
+            tx.type == TransactionType.EXPENSE
+            and tx.external_hash == marker
+            and period_start <= tx.transaction_date <= period_end
+        ):
+            total = money(total + tx.amount)
+    return total
 
 
 def recurring_due_dates_for_period(
@@ -699,35 +713,6 @@ def groceries_category_codes(categories: list[Category]) -> set[str]:
         return codes
     codes.update(category.code for category in categories if category.parent_id == groceries.id)
     return codes
-
-
-def sum_expenses_for_category_ids(
-    transactions: list[Transaction],
-    category_ids: set[uuid.UUID],
-    period_start: date,
-    period_end: date,
-) -> Decimal:
-    total = ZERO
-    for tx in transactions:
-        if (
-            tx.type != TransactionType.EXPENSE
-            or not period_start <= tx.transaction_date <= period_end
-        ):
-            continue
-        categorized_items = [item for item in tx.items if item.category_id is not None]
-        if categorized_items:
-            item_total = ZERO
-            for item in categorized_items:
-                item_total = money(item_total + item.total_amount)
-                if item.category_id in category_ids:
-                    total = money(total + item.total_amount)
-            diff = money(tx.amount - item_total)
-            if abs(diff) > Decimal("0.02") and tx.category_id in category_ids:
-                total = money(total + diff)
-            continue
-        if tx.category_id in category_ids:
-            total = money(total + tx.amount)
-    return total
 
 
 def sum_expenses_for_category_codes(

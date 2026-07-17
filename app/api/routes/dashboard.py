@@ -143,7 +143,11 @@ def render_dashboard(
         category_options or [],
     )
     mandatory_overview = render_mandatory_overview(snapshot.upcoming_payments, today)  # type: ignore[attr-defined]
+    mandatory_progress = render_mandatory_payment_progress(
+        snapshot.mandatory_payment_progress  # type: ignore[attr-defined]
+    )
     groceries_focus = render_groceries_focus(snapshot)
+    groceries_week_history = render_groceries_week_history(snapshot)
     available_status = "Бюджет превышен" if available < 0 else "Бюджет в норме"
     test_panel = (
         render_test_panel(
@@ -274,6 +278,97 @@ def render_dashboard(
     .status.danger {{ background: #ffe9e6; color: var(--bad); }}
     .grocery-card.warning {{ border-color: #e2b55f; }}
     .grocery-card.danger {{ border-color: #db8b82; }}
+    .week-history-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }}
+    .week-card {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      display: grid;
+      grid-template-columns: 78px minmax(0, 1fr);
+      gap: 12px;
+      align-items: center;
+      background: #fff;
+    }}
+    .week-card.green {{ border-color: #9dc8b9; }}
+    .week-card.yellow {{ border-color: #e4bd68; }}
+    .week-card.red {{ border-color: #e09b92; }}
+    .week-donut {{
+      width: 78px;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: conic-gradient(var(--week-color) var(--pct), #e6eaf0 0);
+      display: grid;
+      place-items: center;
+    }}
+    .week-donut::after {{
+      content: "";
+      width: 46px;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: #fff;
+    }}
+    .week-card.green {{ --week-color: #2e8f6f; }}
+    .week-card.yellow {{ --week-color: #b98513; }}
+    .week-card.red {{ --week-color: #c84f43; }}
+    .week-meta {{ display: grid; gap: 5px; min-width: 0; }}
+    .week-title {{ font-weight: 750; }}
+    .week-line {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }}
+    .week-line strong {{ color: var(--ink); }}
+    .mandatory-progress-list {{
+      display: grid;
+      gap: 14px;
+    }}
+    .mandatory-progress-item {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: center;
+      padding: 12px 0;
+      border-top: 1px solid var(--line);
+    }}
+    .mandatory-progress-item:first-child {{ border-top: 0; padding-top: 0; }}
+    .progress-main {{
+      display: grid;
+      gap: 7px;
+      min-width: 0;
+    }}
+    .progress-title {{
+      font-weight: 750;
+      overflow-wrap: anywhere;
+    }}
+    .progress-subtitle {{
+      color: var(--muted);
+      font-size: 13px;
+    }}
+    .progress-bar {{
+      height: 9px;
+      border-radius: 999px;
+      background: #e6eaf0;
+      overflow: hidden;
+    }}
+    .progress-fill {{
+      height: 100%;
+      width: var(--pct);
+      border-radius: 999px;
+      background: var(--accent);
+    }}
+    .progress-fill.warn {{ background: var(--warn); }}
+    .progress-fill.bad {{ background: var(--bad); }}
+    .progress-amount {{
+      font-weight: 800;
+      white-space: nowrap;
+      text-align: right;
+    }}
     .grocery-ring-wrap {{
       display: grid;
       place-items: center;
@@ -587,10 +682,14 @@ def render_dashboard(
 
     {test_panel}
 
+    {mandatory_progress}
+
     <section class="card">
       <h2>Расходы по категориям</h2>
       {category_cards}
     </section>
+
+    {groceries_week_history}
 
     <section class="card">
       <h2>Фактический остаток</h2>
@@ -886,6 +985,8 @@ def render_groceries_focus(snapshot: object) -> str:
           </section>
         """
     weekly_limit = groceries_week.weekly_limit  # type: ignore[attr-defined]
+    base_weekly_limit = groceries_week.base_weekly_limit  # type: ignore[attr-defined]
+    carryover = groceries_week.carryover  # type: ignore[attr-defined]
     spent = groceries_week.spent  # type: ignore[attr-defined]
     remaining = groceries_week.remaining  # type: ignore[attr-defined]
     overspent = max(Decimal("0"), money(spent - weekly_limit))
@@ -904,6 +1005,12 @@ def render_groceries_focus(snapshot: object) -> str:
         if overspent > 0
         else ""
     )
+    carryover_class = "bad" if carryover < 0 else "good"
+    carryover_row = (
+        f'<div class="row"><div class="name muted">Перенос прошлых недель</div><div class="amount {carryover_class}">{format_money(carryover)}</div></div>'
+        if carryover != 0
+        else ""
+    )
     return f"""
       <section class="card grocery-card {tone}">
         <div class="section-title"><h2>Продукты на неделю</h2><span class="status {tone}">{status}</span></div>
@@ -918,9 +1025,58 @@ def render_groceries_focus(snapshot: object) -> str:
           </div>
         </div>
         <div class="row"><div class="name muted">Потрачено</div><div class="amount"><span data-test="groceries-spent">{format_money(spent)}</span> из <span data-test="groceries-weekly">{format_money(weekly_limit)}</span></div></div>
+        <div class="row"><div class="name muted">Базовый недельный бюджет</div><div class="amount">{format_money(base_weekly_limit)}</div></div>
+        {carryover_row}
         <div class="row"><div class="name muted">Использовано</div><div class="amount" data-test="grocery-used-pct">{pct}%</div></div>
         <div class="row"><div class="name muted">Неделя</div><div class="amount">{format_date_short(groceries_week.week_start)} — {format_date_short(groceries_week.week_end)}</div></div>
         {overspent_row}
+      </section>
+    """
+
+
+def render_groceries_week_history(snapshot: object) -> str:
+    history = getattr(snapshot, "groceries_week_history", [])
+    completed_weeks = [
+        week
+        for week in history
+        if getattr(week, "week_end", date.min) < date.today()
+    ]
+    if not completed_weeks:
+        return ""
+    cards = []
+    for index, week in enumerate(completed_weeks, start=1):
+        adjusted_limit = week.adjusted_weekly_limit
+        spent = week.spent
+        pct = percent(spent, adjusted_limit)
+        status = week.status
+        balance = week.balance
+        balance_label = "Остаток" if balance >= 0 else "Перерасход"
+        balance_class = "good" if balance >= 0 else "bad"
+        status_label = {
+            "green": "В бюджете",
+            "yellow": "Перерасход до 5%",
+            "red": "Перерасход больше 5%",
+        }.get(status, "В бюджете")
+        cards.append(
+            f"""
+            <div class="week-card {escape(status)}">
+              <div class="week-donut" style="--pct:{pct}%"></div>
+              <div class="week-meta">
+                <div class="week-title">Неделя {index}: {format_date_short(week.week_start)} — {format_date_short(week.week_end)}</div>
+                <div class="week-line"><span>Статус</span><strong>{status_label}</strong></div>
+                <div class="week-line"><span>Потрачено</span><strong>{format_money(spent)} из {format_money(adjusted_limit)}</strong></div>
+                <div class="week-line"><span>{balance_label}</span><strong class="{balance_class}">{format_money(abs(balance))}</strong></div>
+              </div>
+            </div>
+            """
+        )
+    return f"""
+      <section class="card">
+        <div class="section-title">
+          <h2>Продуктовые недели</h2>
+          <span class="hint">Перенос остатка или перерасхода влияет на следующую неделю</span>
+        </div>
+        <div class="week-history-grid">{"".join(cards)}</div>
       </section>
     """
 
@@ -939,6 +1095,48 @@ def render_mandatory_overview(payments: list[object], today: date) -> str:
             """  # type: ignore[attr-defined]
         )
     return f'<div class="payments-list">{"".join(rows)}</div>'
+
+
+def render_mandatory_payment_progress(items: list[object]) -> str:
+    if not items:
+        return """
+          <section class="card">
+            <h2>Обязательные платежи</h2>
+            <div class="muted">Обязательные платежи не настроены.</div>
+          </section>
+        """
+    rows = []
+    for item in items:
+        amount = money(item.amount)  # type: ignore[attr-defined]
+        spent = money(item.spent)  # type: ignore[attr-defined]
+        pct = min(100, percent(spent, amount))
+        fill_tone = "bad" if spent > amount else "warn" if pct >= 80 else ""
+        category_text = (
+            f'<div class="progress-subtitle">Категория: {escape(item.category_name)}</div>'
+            if getattr(item, "category_name", None)
+            else ""
+        )
+        rows.append(
+            f"""
+            <div class="mandatory-progress-item">
+              <div class="progress-main">
+                <div class="progress-title">{escape(clean_payment_name(item.name))}</div>
+                {category_text}
+                <div class="progress-bar"><div class="progress-fill {fill_tone}" style="--pct:{pct}%"></div></div>
+              </div>
+              <div class="progress-amount">{format_money(spent)} из {format_money(amount)}</div>
+            </div>
+            """  # type: ignore[attr-defined]
+        )
+    return f"""
+      <section class="card">
+        <div class="section-title">
+          <h2>Обязательные платежи</h2>
+          <span class="hint">Фактические траты по категориям за зарплатный цикл</span>
+        </div>
+        <div class="mandatory-progress-list">{"".join(rows)}</div>
+      </section>
+    """
 
 
 def build_category_expense_details(

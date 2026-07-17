@@ -209,13 +209,16 @@ def test_available_reserves_spent_groceries_plus_remaining_weeks_mid_cycle() -> 
 
     assert snapshot.groceries_cycle_spent == Decimal("350.00")
     assert snapshot.groceries_cycle_remaining_weeks == 1
-    assert snapshot.groceries_cycle_reserved == Decimal("750.00")
-    assert snapshot.cycle_balance_after_plan == Decimal("2250.00")
+    assert snapshot.groceries_cycle_reserved == Decimal("600.00")
+    assert snapshot.groceries_week is not None
+    assert snapshot.groceries_week.weekly_limit == Decimal("50.00")
+    assert snapshot.groceries_week.carryover == Decimal("-150.00")
+    assert snapshot.cycle_balance_after_plan == Decimal("2400.00")
     assert snapshot.discretionary_spent == Decimal("100.00")
-    assert snapshot.available_to_spend == Decimal("2150.00")
+    assert snapshot.available_to_spend == Decimal("2300.00")
 
 
-def test_grocery_week_overspend_does_not_add_remaining_current_week() -> None:
+def test_grocery_week_uses_previous_week_unspent_budget() -> None:
     item = budget_with_groceries()
     item.savings_target = Decimal("0.00")
     item.minimum_reserve = Decimal("0.00")
@@ -237,9 +240,64 @@ def test_grocery_week_overspend_does_not_add_remaining_current_week() -> None:
     )
 
     assert snapshot.groceries_week is not None
-    assert snapshot.groceries_week.remaining == Decimal("0.00")
+    assert snapshot.groceries_week.weekly_limit == Decimal("400.00")
+    assert snapshot.groceries_week.remaining == Decimal("140.00")
     assert snapshot.groceries_cycle_spent == Decimal("260.00")
-    assert snapshot.groceries_cycle_reserved == Decimal("460.00")
+    assert snapshot.groceries_cycle_reserved == Decimal("600.00")
+
+
+def test_current_grocery_week_overspend_reduces_future_week_reserve() -> None:
+    item = budget_with_groceries()
+    item.savings_target = Decimal("0.00")
+    item.minimum_reserve = Decimal("0.00")
+    groceries = category("groceries")
+    snapshot = BudgetEngine().build_snapshot(
+        date(2026, 7, 24),
+        [
+            tx(TransactionType.INCOME, "4000", transaction_date=date(2026, 7, 10)),
+            tx(
+                TransactionType.EXPENSE,
+                "460",
+                category_id=groceries.id,
+                transaction_date=date(2026, 7, 22),
+            ),
+        ],
+        item,
+        [],
+        [groceries],
+    )
+
+    assert snapshot.groceries_week is not None
+    assert snapshot.groceries_week.weekly_limit == Decimal("400.00")
+    assert snapshot.groceries_week.remaining == Decimal("0.00")
+    assert snapshot.groceries_week.overspent == Decimal("60.00")
+    assert snapshot.groceries_cycle_reserved == Decimal("600.00")
+
+
+def test_mandatory_payment_progress_tracks_spent_by_category() -> None:
+    child = category("child")
+    snapshot = BudgetEngine().build_snapshot(
+        date(2026, 7, 20),
+        [
+            tx(TransactionType.INCOME, "3400", transaction_date=date(2026, 7, 10)),
+            tx(
+                TransactionType.EXPENSE,
+                "270",
+                category_id=child.id,
+                transaction_date=date(2026, 7, 18),
+            ),
+        ],
+        budget_with_groceries(),
+        [payment("500", payment_day=15, category_id=child.id)],
+        [child],
+    )
+
+    assert len(snapshot.mandatory_payment_progress) == 1
+    progress = snapshot.mandatory_payment_progress[0]
+    assert progress.amount == Decimal("500.00")
+    assert progress.spent == Decimal("270.00")
+    assert progress.remaining == Decimal("230.00")
+    assert progress.category_name == "child"
 
 
 def test_dessert_counts_as_groceries_even_without_parent() -> None:
@@ -379,3 +437,33 @@ def test_groceries_weekly_limit_from_tuesday() -> None:
     assert snapshot.groceries_week.next_week_start == date(2026, 7, 21)
     assert snapshot.groceries_week.spent == Decimal("101.00")
     assert snapshot.groceries_week.remaining == Decimal("99.00")
+
+
+def test_groceries_carryover_adds_unspent_previous_week() -> None:
+    groceries = category("groceries")
+    snapshot = BudgetEngine().build_snapshot(
+        date(2026, 7, 29),
+        [
+            tx(TransactionType.INCOME, "3400", transaction_date=date(2026, 7, 10)),
+            tx(
+                TransactionType.EXPENSE,
+                "250",
+                category_id=groceries.id,
+                transaction_date=date(2026, 7, 15),
+            ),
+            tx(
+                TransactionType.EXPENSE,
+                "100",
+                category_id=groceries.id,
+                transaction_date=date(2026, 7, 22),
+            ),
+        ],
+        budget_with_groceries(),
+        [],
+        [groceries],
+    )
+
+    assert snapshot.groceries_week is not None
+    assert snapshot.groceries_week.week_start == date(2026, 7, 28)
+    assert snapshot.groceries_week.carryover == Decimal("50.00")
+    assert snapshot.groceries_week.weekly_limit == Decimal("250.00")

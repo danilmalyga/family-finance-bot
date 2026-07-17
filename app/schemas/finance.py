@@ -23,14 +23,38 @@ class UpcomingPayment(BaseModel):
     payment_date: date | None = None
 
 
+class MandatoryPaymentProgress(BaseModel):
+    name: str
+    amount: Decimal
+    spent: Decimal
+    remaining: Decimal
+    category_id: UUID | None = None
+    category_name: str | None = None
+    payment_date: date | None = None
+
+
 class GroceriesWeekSummary(BaseModel):
     week_start: date
     week_end: date
+    base_weekly_limit: Decimal
+    carryover: Decimal = Decimal("0.00")
     next_week_start: date
     weekly_limit: Decimal
     spent: Decimal
     remaining: Decimal
+    overspent: Decimal = Decimal("0.00")
     start_weekday: int
+
+
+class GroceriesWeekHistoryItem(BaseModel):
+    week_start: date
+    week_end: date
+    base_weekly_limit: Decimal
+    adjusted_weekly_limit: Decimal
+    carryover_from_previous: Decimal
+    spent: Decimal
+    balance: Decimal
+    status: str
 
 
 class FinancialSnapshot(BaseModel):
@@ -56,8 +80,10 @@ class FinancialSnapshot(BaseModel):
     days_until_next_income: int
     safe_daily_limit: Decimal
     groceries_week: GroceriesWeekSummary | None = None
+    groceries_week_history: list[GroceriesWeekHistoryItem] = Field(default_factory=list)
     category_summaries: list[CategorySummary]
     upcoming_payments: list[UpcomingPayment]
+    mandatory_payment_progress: list[MandatoryPaymentProgress] = Field(default_factory=list)
 
 
 class PurchaseRequest(BaseModel):

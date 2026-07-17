@@ -1,9 +1,8 @@
 import json
 from functools import lru_cache
-from typing import Annotated
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -16,7 +15,10 @@ class Settings(BaseSettings):
     database_url: str
     database_ssl: bool = False
     public_base_url: str | None = None
-    bot_enabled: bool = True
+    bot_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("BOT_ENABLED", "ENABLE_TELEGRAM_BOT"),
+    )
 
     telegram_bot_token: SecretStr | None = None
     allowed_telegram_user_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)

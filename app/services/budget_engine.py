@@ -17,7 +17,9 @@ from app.repositories.transactions import TransactionRepository
 from app.schemas.finance import (
     CategorySummary,
     FinancialSnapshot,
+    GroceriesWeekHistoryItem,
     GroceriesWeekSummary,
+    MandatoryPaymentProgress,
     PurchaseAdvice,
     PurchaseRequest,
     UpcomingPayment,
@@ -109,6 +111,14 @@ class BudgetEngine:
             payment.category_id for payment in recurring_payments if payment.category_id is not None
         }
         groceries_codes = groceries_category_codes(categories)
+        groceries_history = groceries_week_history(
+            today,
+            period_start,
+            period_end,
+            period_confirmed,
+            budget,
+            categories,
+        )
         groceries_reserve = groceries_cycle_reserve(
             today,
             period_start,
@@ -116,6 +126,7 @@ class BudgetEngine:
             period_confirmed,
             budget,
             categories,
+            groceries_history,
         )
         groceries_cycle_reserved = groceries_reserve.total_reserved
         discretionary_spent = sum_discretionary_spent(
@@ -142,7 +153,14 @@ class BudgetEngine:
         safe_daily = money(available / Decimal(days_until_income))
 
         summaries = category_summaries(period_confirmed, categories)
-        groceries_week = groceries_week_summary(today, confirmed, budget, categories)
+        groceries_week = groceries_week_summary(today, confirmed, budget, categories, groceries_history)
+        mandatory_progress = mandatory_payment_progress(
+            recurring_payments,
+            period_confirmed,
+            period_start,
+            period_end,
+            categories,
+        )
         return FinancialSnapshot(
             period_start=period_start,
             period_end=period_end,
@@ -166,11 +184,13 @@ class BudgetEngine:
             days_until_next_income=days_until_income,
             safe_daily_limit=safe_daily,
             groceries_week=groceries_week,
+            groceries_week_history=groceries_history,
             category_summaries=summaries,
             upcoming_payments=[
                 UpcomingPayment(name=p.name, amount=money(p.amount), payment_date=p.payment_date)
                 for p in upcoming
             ],
+            mandatory_payment_progress=mandatory_progress,
         )
 
     def advise_purchase(
@@ -338,6 +358,7 @@ def groceries_cycle_reserve(
     transactions: list[Transaction],
     budget: MonthlyBudget | None,
     categories: list[Category],
+    week_history: list[GroceriesWeekHistoryItem] | None = None,
 ) -> GroceryCycleReserve:
     if budget is None or budget.groceries_weekly_limit <= ZERO:
         return GroceryCycleReserve(ZERO, ZERO, ZERO, 0)
@@ -352,6 +373,18 @@ def groceries_cycle_reserve(
         categories,
     )
     current_week_start, current_week_end = groceries_week_range(today, budget)
+    current_adjusted_limit = weekly_limit
+    if week_history:
+        current_week = next(
+            (
+                week
+                for week in week_history
+                if week.week_start <= today <= week.week_end
+            ),
+            None,
+        )
+        if current_week is not None:
+            current_adjusted_limit = current_week.adjusted_weekly_limit
     current_week_spent = sum_expenses_for_category_codes(
         transactions,
         groceries_codes,
@@ -361,12 +394,26 @@ def groceries_cycle_reserve(
     )
     current_week_overlaps_period = current_week_start <= period_end and current_week_end >= period_start
     remaining_current_week = (
-        max(ZERO, money(weekly_limit - current_week_spent))
+        max(ZERO, money(current_adjusted_limit - current_week_spent))
         if current_week_overlaps_period and today <= period_end
         else ZERO
     )
-    future_weeks = future_grocery_weeks_count(current_week_end + timedelta(days=1), period_end, budget)
-    future_reserved = money(remaining_current_week + weekly_limit * Decimal(future_weeks))
+    future_weeks = 0
+    future_reserved = remaining_current_week
+    carryover = min(ZERO, money(current_adjusted_limit - current_week_spent))
+    cursor = current_week_end + timedelta(days=1)
+    while cursor <= period_end:
+        week_start, week_end = groceries_week_range(cursor, budget)
+        if week_start < cursor:
+            week_start += timedelta(days=7)
+            week_end += timedelta(days=7)
+        if week_end > period_end:
+            break
+        adjusted_limit = max(ZERO, money(weekly_limit + carryover))
+        future_reserved = money(future_reserved + adjusted_limit)
+        future_weeks += 1
+        carryover = ZERO
+        cursor = week_end + timedelta(days=1)
     return GroceryCycleReserve(
         actual_spent=actual_spent,
         future_reserved=future_reserved,
@@ -404,6 +451,47 @@ def mandatory_for_period(
             for due_date in due_dates
         )
     return upcoming
+
+
+def mandatory_payment_progress(
+    payments: list[RecurringPayment],
+    transactions: list[Transaction],
+    period_start: date,
+    period_end: date,
+    categories: list[Category],
+) -> list[MandatoryPaymentProgress]:
+    category_by_id = {category.id: category for category in categories}
+    progress_items: list[MandatoryPaymentProgress] = []
+    for payment in payments:
+        if not payment.is_active or not payment.is_mandatory:
+            continue
+        due_dates = recurring_due_dates_for_period(payment, period_start, period_end)
+        if not due_dates:
+            continue
+        allocated = money(payment.amount * Decimal(len(due_dates)))
+        category = category_by_id.get(payment.category_id) if payment.category_id else None
+        spent = (
+            sum_expenses_for_category_ids(
+                transactions,
+                {payment.category_id},
+                period_start,
+                period_end,
+            )
+            if payment.category_id is not None
+            else ZERO
+        )
+        progress_items.append(
+            MandatoryPaymentProgress(
+                name=payment.name,
+                amount=allocated,
+                spent=spent,
+                remaining=money(allocated - spent),
+                category_id=payment.category_id,
+                category_name=category.name if category else None,
+                payment_date=min(due_dates),
+            )
+        )
+    return progress_items
 
 
 def recurring_due_dates_for_period(
@@ -509,22 +597,98 @@ def groceries_week_summary(
     transactions: list[Transaction],
     budget: MonthlyBudget | None,
     categories: list[Category],
+    week_history: list[GroceriesWeekHistoryItem] | None = None,
 ) -> GroceriesWeekSummary | None:
     if budget is None or budget.groceries_weekly_limit <= ZERO:
         return None
     week_start, week_end = groceries_week_range(today, budget)
     groceries_codes = groceries_category_codes(categories)
     spent = sum_expenses_for_category_codes(transactions, groceries_codes, week_start, week_end, categories)
-    weekly_limit = money(budget.groceries_weekly_limit)
+    base_weekly_limit = money(budget.groceries_weekly_limit)
+    carryover = ZERO
+    weekly_limit = base_weekly_limit
+    if week_history:
+        current_week = next(
+            (
+                week
+                for week in week_history
+                if week.week_start <= today <= week.week_end
+            ),
+            None,
+        )
+        if current_week is not None:
+            carryover = current_week.carryover_from_previous
+            weekly_limit = current_week.adjusted_weekly_limit
     return GroceriesWeekSummary(
         week_start=week_start,
         week_end=week_end,
+        base_weekly_limit=base_weekly_limit,
+        carryover=carryover,
         next_week_start=week_end + timedelta(days=1),
         weekly_limit=weekly_limit,
         spent=spent,
         remaining=max(ZERO, money(weekly_limit - spent)),
+        overspent=max(ZERO, money(spent - weekly_limit)),
         start_weekday=normalize_weekday(budget.groceries_week_start_weekday),
     )
+
+
+def groceries_week_history(
+    today: date,
+    period_start: date,
+    period_end: date,
+    transactions: list[Transaction],
+    budget: MonthlyBudget | None,
+    categories: list[Category],
+) -> list[GroceriesWeekHistoryItem]:
+    if budget is None or budget.groceries_weekly_limit <= ZERO:
+        return []
+    base_weekly_limit = money(budget.groceries_weekly_limit)
+    groceries_codes = groceries_category_codes(categories)
+    history: list[GroceriesWeekHistoryItem] = []
+    carryover = ZERO
+    cursor, first_week_end = groceries_week_range(period_start, budget)
+    if cursor < period_start:
+        cursor = first_week_end + timedelta(days=1)
+    while cursor <= min(today, period_end):
+        week_start, week_end = groceries_week_range(cursor, budget)
+        visible_start = max(period_start, week_start)
+        visible_end = min(period_end, week_end)
+        adjusted_limit = max(ZERO, money(base_weekly_limit + carryover))
+        spent = sum_expenses_for_category_codes(
+            transactions,
+            groceries_codes,
+            visible_start,
+            visible_end,
+            categories,
+        )
+        balance = money(adjusted_limit - spent)
+        history.append(
+            GroceriesWeekHistoryItem(
+                week_start=visible_start,
+                week_end=visible_end,
+                base_weekly_limit=base_weekly_limit,
+                adjusted_weekly_limit=adjusted_limit,
+                carryover_from_previous=carryover,
+                spent=spent,
+                balance=balance,
+                status=groceries_week_status(spent, adjusted_limit),
+            )
+        )
+        if week_end < today:
+            carryover = balance
+        cursor = week_end + timedelta(days=1)
+    return history
+
+
+def groceries_week_status(spent: Decimal, adjusted_limit: Decimal) -> str:
+    if adjusted_limit <= ZERO:
+        return "red" if spent > ZERO else "green"
+    if spent <= adjusted_limit:
+        return "green"
+    if spent <= money(adjusted_limit * Decimal("1.05")):
+        return "yellow"
+    return "red"
 
 
 def groceries_category_codes(categories: list[Category]) -> set[str]:
@@ -535,6 +699,35 @@ def groceries_category_codes(categories: list[Category]) -> set[str]:
         return codes
     codes.update(category.code for category in categories if category.parent_id == groceries.id)
     return codes
+
+
+def sum_expenses_for_category_ids(
+    transactions: list[Transaction],
+    category_ids: set[uuid.UUID],
+    period_start: date,
+    period_end: date,
+) -> Decimal:
+    total = ZERO
+    for tx in transactions:
+        if (
+            tx.type != TransactionType.EXPENSE
+            or not period_start <= tx.transaction_date <= period_end
+        ):
+            continue
+        categorized_items = [item for item in tx.items if item.category_id is not None]
+        if categorized_items:
+            item_total = ZERO
+            for item in categorized_items:
+                item_total = money(item_total + item.total_amount)
+                if item.category_id in category_ids:
+                    total = money(total + item.total_amount)
+            diff = money(tx.amount - item_total)
+            if abs(diff) > Decimal("0.02") and tx.category_id in category_ids:
+                total = money(total + diff)
+            continue
+        if tx.category_id in category_ids:
+            total = money(total + tx.amount)
+    return total
 
 
 def sum_expenses_for_category_codes(

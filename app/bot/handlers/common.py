@@ -356,7 +356,7 @@ async def payment_settings_text(message: Message, state: FSMContext) -> None:
         return
     parsed = parse_payment_settings(message.text)
     if parsed is None:
-        await message.answer(payment_settings_help())
+        await message.answer(await payment_settings_help_for_family(user.family_id))
         return
     name, amount, payment_day, category_code = parsed
     async with SessionLocal() as session:
@@ -672,7 +672,7 @@ async def process_receipt_file(
 
 
 @router.message(F.text)
-async def free_text(message: Message) -> None:
+async def free_text(message: Message, state: FSMContext) -> None:
     text = message.text or ""
     if text in {
         "⬅️ Главное меню",
@@ -681,8 +681,9 @@ async def free_text(message: Message) -> None:
         "⚙️ Настройки",
         "📈 Инфографика",
         "✅ Зарплата пришла",
+        "📌 Обязательный платёж",
     }:
-        await menu_action(message)
+        await menu_action(message, state)
         return
     await handle_text_transaction(message)
 
@@ -843,7 +844,7 @@ async def purchase_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-async def menu_action(message: Message) -> None:
+async def menu_action(message: Message, state: FSMContext) -> None:
     if message.text == "⬅️ Главное меню":
         await message.answer("Главное меню.", reply_markup=main_menu())
     elif message.text == "📷 Отправить чек":
@@ -854,6 +855,8 @@ async def menu_action(message: Message) -> None:
         await send_dashboard_link(message)
     elif message.text == "✅ Зарплата пришла":
         await salary_received(message)
+    elif message.text == "📌 Обязательный платёж":
+        await start_payment_settings_dialog(message, state)
     else:
         await message.answer("Что настроить?", reply_markup=settings_keyboard())
 
@@ -909,8 +912,23 @@ async def settings_salary_callback(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "settings:payment")
 async def settings_payment_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    async with SessionLocal() as session:
+        try:
+            user = await AuthService(session, get_settings()).get_or_create_telegram_user(
+                callback.from_user
+            )
+        except AccessDeniedError:
+            await callback.message.answer("Доступ к семейному бюджету ограничен.")
+            await callback.answer()
+            return
     await state.set_state(SettingsFlow.waiting_payment)
-    await callback.message.answer(payment_settings_help(), reply_markup=back_to_main_menu())  # type: ignore[union-attr]
+    await callback.message.answer(  # type: ignore[union-attr]
+        await payment_settings_help_for_family(user.family_id),
+        reply_markup=back_to_main_menu(),
+    )
     await callback.answer()
 
 
@@ -977,6 +995,17 @@ async def show_wishlist(message: Message) -> None:
         await message.answer("Список желаний пуст.")
     else:
         await message.answer("\n".join(f"{i.name}: {fmt_money(i.price)} — {i.status}" for i in items))
+
+
+async def start_payment_settings_dialog(message: Message, state: FSMContext) -> None:
+    user = await get_user(message)
+    if user is None:
+        return
+    await state.set_state(SettingsFlow.waiting_payment)
+    await message.answer(
+        await payment_settings_help_for_family(user.family_id),
+        reply_markup=back_to_main_menu(),
+    )
 
 
 def format_transaction(tx: Transaction) -> str:
@@ -1140,13 +1169,42 @@ def groceries_budget_help() -> str:
     )
 
 
-def payment_settings_help() -> str:
+async def payment_settings_help_for_family(family_id: UUID) -> str:
+    async with SessionLocal() as session:
+        payments = [
+            payment
+            for payment in await BudgetRepository(session).list_active_recurring(family_id)
+            if payment.is_mandatory
+        ]
+        categories = await FamilyRepository(session).list_categories(family_id)
+    category_by_id = {category.id: category for category in categories}
+    suggestions = []
+    for payment in payments:
+        category = category_by_id.get(payment.category_id) if payment.category_id else None
+        if category is None:
+            continue
+        suggestions.append(f"{len(suggestions) + 1}. {payment.name} → {category.code}")
+    return payment_settings_help(suggestions)
+
+
+def payment_settings_help(suggestions: list[str] | None = None) -> str:
+    suggestion_text = ""
+    if suggestions:
+        suggestion_text = (
+            "У вас уже есть обязательные платежи по категориям:\n"
+            + "\n".join(suggestions)
+            + "\n\n"
+        )
     return (
         "Введите обязательный платёж одной строкой:\n"
         "название сумма день категория\n\n"
+        "Категория нужна, чтобы в инфографике считать факт по этому резерву.\n"
+        "Например: если указать child, расходы категории child будут показываться как потраченные из этого платежа.\n\n"
+        f"{suggestion_text}"
         "Примеры:\n"
         "Квартира 1000 1 housing\n"
         "Возврат долга 650 5 debt\n"
+        "Занятия ребёнка 500 15 child\n"
         "Интернет 45 22 utilities\n"
         "Детский сад 300 10 child\n\n"
         "Основные категории:\n"

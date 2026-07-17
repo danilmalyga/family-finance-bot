@@ -14,7 +14,7 @@ def main_menu() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="❤️ Список желаний"), KeyboardButton(text="📷 Отправить чек")],
             [KeyboardButton(text="📊 Отчёт"), KeyboardButton(text="➕ Добавить расход")],
             [KeyboardButton(text="📈 Инфографика"), KeyboardButton(text="🛒 Можно ли купить?")],
-            [KeyboardButton(text="⚙️ Настройки")],
+            [KeyboardButton(text="📌 Обязательный платёж"), KeyboardButton(text="⚙️ Настройки")],
         ],
         resize_keyboard=True,
     )

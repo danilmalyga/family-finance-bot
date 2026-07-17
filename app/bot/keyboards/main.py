@@ -76,8 +76,17 @@ def settings_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Зарплата пришла", callback_data="settings:salary")],
             [InlineKeyboardButton(text="Добавить доход вручную", callback_data="settings:income")],
             [InlineKeyboardButton(text="Бюджет продуктов на неделю", callback_data="settings:groceries")],
-            [InlineKeyboardButton(text="Обязательный платёж", callback_data="settings:payment")],
+            [InlineKeyboardButton(text="Настройка регулярных платежей", callback_data="settings:payment")],
             [InlineKeyboardButton(text="Личность советника", callback_data="settings:persona")],
+        ]
+    )
+
+
+def mandatory_payment_keyboard(items: list[tuple[str, str]]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=label, callback_data=f"payactual:{payment_id}")]
+            for payment_id, label in items
         ]
     )
 

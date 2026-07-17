@@ -18,3 +18,7 @@ class SettingsFlow(StatesGroup):
     waiting_budget = State()
     waiting_payment = State()
     waiting_groceries_budget = State()
+
+
+class MandatoryPaymentFlow(StatesGroup):
+    waiting_amount = State()

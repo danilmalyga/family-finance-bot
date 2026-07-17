@@ -18,12 +18,19 @@ from app.bot.keyboards.main import (
     category_keyboard,
     draft_keyboard,
     main_menu,
+    mandatory_payment_keyboard,
     purchase_keyboard,
     purchase_persona_keyboard,
     receipt_items_keyboard,
     settings_keyboard,
 )
-from app.bot.states.forms import AddExpense, AddIncome, PurchaseCheck, SettingsFlow
+from app.bot.states.forms import (
+    AddExpense,
+    AddIncome,
+    MandatoryPaymentFlow,
+    PurchaseCheck,
+    SettingsFlow,
+)
 from app.config import get_settings
 from app.db.models.budget import FinancialGoal
 from app.db.models.family import Family, User
@@ -375,7 +382,62 @@ async def payment_settings_text(message: Message, state: FSMContext) -> None:
         await session.commit()
     await state.clear()
     await message.answer(
-        f"Обязательный платёж сохранён:\n{payment.name} — {fmt_money(payment.amount)}, день {payment_day}"
+        f"Регулярный платёж сохранён:\n{payment.name} — {fmt_money(payment.amount)}, день {payment_day}"
+    )
+
+
+@router.message(MandatoryPaymentFlow.waiting_amount)
+async def mandatory_payment_amount_text(message: Message, state: FSMContext) -> None:
+    if await return_to_main_menu_if_requested(message, state):
+        return
+    user = await get_user(message)
+    if user is None or not message.text:
+        return
+    note, amount = parse_name_amount(message.text)
+    if amount is None:
+        await message.answer("Введите сумму оплаты, например: 25 первая тренировка")
+        return
+    data = await state.get_data()
+    payment_id_text = data.get("mandatory_payment_id")
+    if not isinstance(payment_id_text, str):
+        await state.clear()
+        await message.answer("Платёж не выбран. Нажмите кнопку «📌 Обязательный платёж» ещё раз.")
+        return
+    async with SessionLocal() as session:
+        payment = await BudgetRepository(session).get_recurring(UUID(payment_id_text))
+        if payment is None or payment.family_id != user.family_id:
+            await state.clear()
+            await message.answer("Регулярный платёж не найден.")
+            return
+        if payment.category_id is None:
+            await state.clear()
+            await message.answer(
+                "У этого регулярного платежа не указана категория. "
+                "Добавьте его заново через настройки с категорией."
+            )
+            return
+        description = f"{payment.name}: {note}" if note and note != "Покупка" else payment.name
+        tx = await TransactionRepository(session).create(
+            TransactionCreate(
+                family_id=user.family_id,
+                user_id=user.id,
+                category_id=payment.category_id,
+                type=TransactionType.EXPENSE,
+                amount=amount,
+                currency=get_settings().default_currency,
+                description=description,
+                transaction_date=date.today(),
+                source=TransactionSource.MANUAL,
+                status=TransactionStatus.CONFIRMED,
+            )
+        )
+        await session.commit()
+    await state.clear()
+    await message.answer(
+        f"Оплата обязательного платежа сохранена:\n"
+        f"{payment.name} — {fmt_money(tx.amount)}\n"
+        "Она попадёт в прогресс обязательных платежей в инфографике.",
+        reply_markup=main_menu(),
     )
 
 
@@ -844,6 +906,35 @@ async def purchase_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("payactual:"))
+async def actual_mandatory_payment_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None or callback.data is None:
+        await callback.answer()
+        return
+    payment_id_text = callback.data.split(":", 1)[1]
+    async with SessionLocal() as session:
+        try:
+            user = await AuthService(session, get_settings()).get_or_create_telegram_user(
+                callback.from_user
+            )
+        except AccessDeniedError:
+            await callback.message.answer("Доступ к семейному бюджету ограничен.")
+            await callback.answer()
+            return
+        payment = await BudgetRepository(session).get_recurring(UUID(payment_id_text))
+        if payment is None or payment.family_id != user.family_id:
+            await callback.answer("Платёж не найден")
+            return
+    await state.set_state(MandatoryPaymentFlow.waiting_amount)
+    await state.update_data(mandatory_payment_id=payment_id_text)
+    await callback.message.answer(
+        f"Введите сумму фактической оплаты по платежу «{payment.name}».\n"
+        "Например: 25 первая тренировка",
+        reply_markup=back_to_main_menu(),
+    )
+    await callback.answer()
+
+
 async def menu_action(message: Message, state: FSMContext) -> None:
     if message.text == "⬅️ Главное меню":
         await message.answer("Главное меню.", reply_markup=main_menu())
@@ -856,7 +947,7 @@ async def menu_action(message: Message, state: FSMContext) -> None:
     elif message.text == "✅ Зарплата пришла":
         await salary_received(message)
     elif message.text == "📌 Обязательный платёж":
-        await start_payment_settings_dialog(message, state)
+        await start_actual_mandatory_payment_dialog(message)
     else:
         await message.answer("Что настроить?", reply_markup=settings_keyboard())
 
@@ -997,14 +1088,28 @@ async def show_wishlist(message: Message) -> None:
         await message.answer("\n".join(f"{i.name}: {fmt_money(i.price)} — {i.status}" for i in items))
 
 
-async def start_payment_settings_dialog(message: Message, state: FSMContext) -> None:
+async def start_actual_mandatory_payment_dialog(message: Message) -> None:
     user = await get_user(message)
     if user is None:
         return
-    await state.set_state(SettingsFlow.waiting_payment)
+    async with SessionLocal() as session:
+        payments = [
+            payment
+            for payment in await BudgetRepository(session).list_active_recurring(user.family_id)
+            if payment.is_mandatory
+        ]
+    if not payments:
+        await message.answer(
+            "Регулярные обязательные платежи ещё не настроены.\n"
+            "Добавьте их через ⚙️ Настройки → Настройка регулярных платежей.",
+            reply_markup=main_menu(),
+        )
+        return
     await message.answer(
-        await payment_settings_help_for_family(user.family_id),
-        reply_markup=back_to_main_menu(),
+        "Выберите обязательный платёж, по которому вы сейчас внесли деньги:",
+        reply_markup=mandatory_payment_keyboard(
+            [(str(payment.id), f"{payment.name} — {fmt_money(payment.amount)}") for payment in payments]
+        ),
     )
 
 
@@ -1191,12 +1296,12 @@ def payment_settings_help(suggestions: list[str] | None = None) -> str:
     suggestion_text = ""
     if suggestions:
         suggestion_text = (
-            "У вас уже есть обязательные платежи по категориям:\n"
+            "У вас уже есть регулярные обязательные платежи:\n"
             + "\n".join(suggestions)
             + "\n\n"
         )
     return (
-        "Введите обязательный платёж одной строкой:\n"
+        "Введите новый регулярный платёж одной строкой:\n"
         "название сумма день категория\n\n"
         "Категория нужна, чтобы в инфографике считать факт по этому резерву.\n"
         "Например: если указать child, расходы категории child будут показываться как потраченные из этого платежа.\n\n"
